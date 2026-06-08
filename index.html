@@ -1642,6 +1642,11 @@
   // ============================================================ GOOGLE DRIVE SYNC
   const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.appdata";
   const SYNC_FILE = "budget-state.json";
+  const GTKEY = "tdbs_gtoken";
+  // Tokens live ~1h; persist so reopening within that window resumes sync with no re-login.
+  function loadToken() { try { const t = JSON.parse(localStorage.getItem(GTKEY) || "null"); if (t && t.token) { gToken = t.token; gTokenExpiry = t.expiry || 0; } } catch (e) {} }
+  function persistToken() { try { if (gToken && gTokenExpiry > Date.now()) localStorage.setItem(GTKEY, JSON.stringify({ token: gToken, expiry: gTokenExpiry })); else localStorage.removeItem(GTKEY); } catch (e) {} }
+  function clearToken() { gToken = null; gTokenExpiry = 0; persistToken(); }
   function clientId() { return (state && state.googleClientId) || GOOGLE_CLIENT_ID || ""; }
   function gisReady() { return !!(window.google && google.accounts && google.accounts.oauth2); }
   function signedIn() { return !!(state && state.google && state.google.signedIn); }
@@ -1654,7 +1659,7 @@
     gTokenClient = google.accounts.oauth2.initTokenClient({
       client_id: clientId(), scope: DRIVE_SCOPE,
       callback: (resp) => {
-        if (resp && resp.access_token) { gToken = resp.access_token; gTokenExpiry = Date.now() + ((resp.expires_in || 3600) * 1000); if (gTokenResolve) { gTokenResolve(gToken); gTokenResolve = null; } }
+        if (resp && resp.access_token) { gToken = resp.access_token; gTokenExpiry = Date.now() + ((resp.expires_in || 3600) * 1000); persistToken(); if (gTokenResolve) { gTokenResolve(gToken); gTokenResolve = null; } }
         else if (gTokenResolve) { gTokenResolve(null); gTokenResolve = null; }
       }
     });
@@ -1732,12 +1737,12 @@
         else await drivePut(token, id, exportState());
       }
       saveLocalOnly(); setSync("synced"); render(); refreshSettings();
-    } catch (e) { gToken = null; saveLocalOnly(); setSync("pending"); scheduleRetry(); refreshSettings(); }
+    } catch (e) { clearToken(); saveLocalOnly(); setSync("pending"); scheduleRetry(); refreshSettings(); }
   }
   // Keep local state intact; just stop syncing. Never deletes the Drive file.
   function signOut() {
     if (state.google) state.google.signedIn = false;
-    gToken = null; gTokenExpiry = 0;
+    clearToken();
     saveLocalOnly(); setSync("idle"); refreshSettings();
   }
   async function doUpload() {
@@ -1748,7 +1753,7 @@
       let id = state.google.fileId || await driveFind(token);
       id = await drivePut(token, id, exportState());
       state.google.fileId = id; saveLocalOnly(); setSync("synced");
-    } catch (e) { gToken = null; setSync("pending"); scheduleRetry(); }
+    } catch (e) { clearToken(); setSync("pending"); scheduleRetry(); }
   }
   // Debounced background upload, hooked from save().
   function queueUpload() {
@@ -1775,7 +1780,7 @@
         if (remote && (remote.updatedAt || 0) > (state.updatedAt || 0)) { adoptRemote(remote); saveLocalOnly(); render(); setSync("synced"); refreshSettings(); return; }
       }
       await doUpload();
-    } catch (e) { gToken = null; setSync("pending"); scheduleRetry(); }
+    } catch (e) { clearToken(); setSync("pending"); scheduleRetry(); }
   }
 
   function gLogo() { return '<svg viewBox="0 0 48 48" width="18" height="18" style="flex:none"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>'; }
@@ -1817,6 +1822,7 @@
     save();
     render();
     refreshRates(false);   // fetch/refresh exchange rates on open (async; re-renders on success)
+    loadToken();           // reuse a still-valid Drive token so reopening doesn't force a re-login
     whenGisReady(() => { buildTokenClient(); if (signedIn()) resumeSync(); });   // resume Drive sync
   }
 
