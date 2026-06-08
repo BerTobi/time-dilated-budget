@@ -1194,7 +1194,7 @@
         const fillLine = full
           ? `<div class="rate" style="color:var(--accent-2)">🎉 Target reached</div>`
           : `<div class="rate fill-est" data-id="${g.id}">~${fmtAmt(convert(fills[g.id] || 0, d, g.cur), g.cur)} <small>/ day</small></div>`;
-        const cl = convLine(g.balance, g.cur);
+        const cl = canConvert(g.cur, d) ? "≈ " + fmtAmt(convert(g.balance, g.cur, d), d) + " / " + fmtAmt(convert(g.target, g.cur, d), d) + " " + d : "";
         const ratioRow = `
           <div class="ratio-row">
             <input type="range" class="ratio-slider" data-id="${g.id}" min="0" max="100" value="${g.ratio || 0}" ${(full || single) ? "disabled" : ""} />
