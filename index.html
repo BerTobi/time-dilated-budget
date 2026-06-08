@@ -1493,6 +1493,9 @@
     }
     if (a === "g-signin") { signIn(); return; }
     if (a === "g-signout") { signOut(); return; }
+    if (a === "g-syncnow") { lastSyncAt = 0; syncNow(); return; }
+    if (a === "g-force-up") { if (confirm("Overwrite the Google Drive copy with THIS device's data?")) forceUpload(); return; }
+    if (a === "g-force-down") { if (confirm("Replace THIS device's data with the Google Drive copy?")) forceDownload(); return; }
     if (a === "g-save-clientid") {
       const v = val("g-clientid");
       if (v) { state.googleClientId = v; saveLocalOnly(); gTokenClient = null; buildTokenClient(); }
@@ -1766,8 +1769,11 @@
     if (retryTimer) return;
     retryTimer = setTimeout(() => { retryTimer = null; if (signedIn() && syncStatus !== "synced") doUpload(); }, 15000);
   }
-  // On load / regained connectivity: pull remote if newer, otherwise push local.
-  async function resumeSync() {
+  // Two-way sync: pull remote when it's newer, otherwise push local. Runs on open, focus,
+  // reconnect and periodically, so another device's changes appear without a full relaunch.
+  let lastSyncAt = 0;
+  function maybeSync() { if (Date.now() - lastSyncAt < 8000) return; lastSyncAt = Date.now(); syncNow(); }
+  async function syncNow() {
     if (!signedIn()) return;
     setSync("syncing");
     const token = await getToken(false);
@@ -1775,12 +1781,32 @@
     try {
       const id = state.google.fileId || await driveFind(token);
       state.google.fileId = id;
-      if (id) {
-        const remote = await driveGet(token, id);
-        if (remote && (remote.updatedAt || 0) > (state.updatedAt || 0)) { adoptRemote(remote); saveLocalOnly(); render(); setSync("synced"); refreshSettings(); return; }
+      const remote = id ? await driveGet(token, id) : null;
+      if (remote && (remote.updatedAt || 0) > (state.updatedAt || 0)) {
+        adoptRemote(remote); saveLocalOnly(); render(); refreshSettings(); setSync("synced");   // pull
+      } else if (!id || (state.updatedAt || 0) > (remote ? (remote.updatedAt || 0) : -1)) {
+        await doUpload();   // local is newer (or no remote yet) -> push
+      } else {
+        setSync("synced");  // already in sync
       }
-      await doUpload();
     } catch (e) { clearToken(); setSync("pending"); scheduleRetry(); }
+  }
+  // Manual conflict resolution — bypass the timestamp comparison entirely.
+  async function forceUpload() {
+    if (!signedIn()) return;
+    setSync("syncing");
+    const token = await getToken(false);
+    if (!token) { setSync("offline"); return; }
+    try { let id = state.google.fileId || await driveFind(token); state.updatedAt = Date.now(); id = await drivePut(token, id, exportState()); state.google.fileId = id; saveLocalOnly(); setSync("synced"); refreshSettings(); }
+    catch (e) { clearToken(); setSync("pending"); }
+  }
+  async function forceDownload() {
+    if (!signedIn()) return;
+    setSync("syncing");
+    const token = await getToken(false);
+    if (!token) { setSync("offline"); return; }
+    try { const id = state.google.fileId || await driveFind(token); if (!id) { setSync("synced"); return; } const remote = await driveGet(token, id); adoptRemote(remote); saveLocalOnly(); render(); refreshSettings(); setSync("synced"); }
+    catch (e) { clearToken(); setSync("pending"); }
   }
 
   function gLogo() { return '<svg viewBox="0 0 48 48" width="18" height="18" style="flex:none"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>'; }
@@ -1801,12 +1827,13 @@
     return `<div style="font-size:13px;color:var(--muted);margin-bottom:10px">Privately syncs your budget to a hidden app-data folder in your Google Drive.</div>
       <div id="sync-ind" style="font-size:13.5px;margin-bottom:12px">${syncPill()}</div>
       ${signedIn()
-        ? `<button class="btn ghost" data-action="g-signout">Sign out of Google</button>`
-        : `<button class="btn gbtn" data-action="g-signin">${gLogo()} Sign in with Google</button>`}
-      <details style="margin-top:12px"><summary style="font-size:12.5px;color:var(--muted)">Change OAuth Client ID</summary>
-        <input class="input" id="g-clientid" style="margin-top:8px" value="${esc(clientId())}" placeholder="…apps.googleusercontent.com" />
-        <button class="btn ghost" data-action="g-save-clientid" style="margin-top:8px">Save Client ID</button>
-      </details>`;
+        ? `<button class="btn accent" data-action="g-syncnow">Sync now</button>
+           <button class="btn ghost" data-action="g-signout" style="margin-top:8px">Sign out of Google</button>
+           <details style="margin-top:10px"><summary style="font-size:12.5px;color:var(--muted)">Resolve a conflict manually</summary>
+             <button class="btn ghost" data-action="g-force-up" style="margin-top:8px">Upload this device → Drive</button>
+             <button class="btn ghost" data-action="g-force-down" style="margin-top:8px">Download Drive → this device</button>
+           </details>`
+        : `<button class="btn gbtn" data-action="g-signin">${gLogo()} Sign in with Google</button>`}`;
   }
   function refreshSettings() { const el = document.getElementById("gsync-card"); if (el) el.innerHTML = gsyncCardHTML(); }
 
@@ -1819,11 +1846,11 @@
     }
     migrate();
     rollIfNeeded();
-    save();
+    saveLocalOnly();       // persist migration/rollover locally WITHOUT bumping updatedAt (not a user edit)
     render();
     refreshRates(false);   // fetch/refresh exchange rates on open (async; re-renders on success)
     loadToken();           // reuse a still-valid Drive token so reopening doesn't force a re-login
-    whenGisReady(() => { buildTokenClient(); if (signedIn()) resumeSync(); });   // resume Drive sync
+    whenGisReady(() => { buildTokenClient(); if (signedIn()) syncNow(); });   // resume Drive sync (two-way)
   }
 
   // process missed midnights while the app stays open / regains focus
@@ -1831,13 +1858,13 @@
     if (!state) return;
     const before = state.currentDate;
     rollIfNeeded();
-    if (state.currentDate !== before) { save(); render(); }
-    if (signedIn() && (syncStatus === "pending" || syncStatus === "offline")) doUpload();   // flush queued sync
+    if (state.currentDate !== before) { saveLocalOnly(); render(); }   // rollover is recomputable, not a user edit
+    if (signedIn()) maybeSync();   // periodic two-way sync (pulls other devices' changes)
   }
   setInterval(tick, 30000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
   window.addEventListener("focus", tick);
-  window.addEventListener("online", () => { if (signedIn() && syncStatus !== "synced") doUpload(); });
+  window.addEventListener("online", () => { if (signedIn()) maybeSync(); });
 
   boot();
 
