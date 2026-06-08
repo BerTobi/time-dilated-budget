@@ -1,0 +1,1653 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="theme-color" content="#10b981" />
+<link rel="manifest" href="manifest.json" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<link rel="icon" href="icon-192.png" />
+<title>Flow — Time-Dilated Budget</title>
+<style>
+  :root {
+    --bg: #f4f5f8;
+    --bg-2: #eaecf1;
+    --surface: #ffffff;
+    --surface-2: #f7f8fa;
+    --text: #0f172a;
+    --muted: #6b7280;
+    --faint: #9aa3b2;
+    --border: #e6e8ee;
+    --accent: #10b981;
+    --accent-2: #059669;
+    --accent-soft: #ecfdf5;
+    --invest: #6366f1;
+    --invest-2: #4f46e5;
+    --invest-soft: #eef0ff;
+    --goal: #f59e0b;
+    --goal-2: #d97706;
+    --goal-soft: #fffbeb;
+    --danger: #ef4444;
+    --danger-soft: #fef2f2;
+    --warn: #f59e0b;
+    --shadow: 0 1px 2px rgba(16,24,40,.04), 0 8px 24px rgba(16,24,40,.06);
+    --shadow-lg: 0 12px 40px rgba(16,24,40,.16);
+    --radius: 20px;
+    --radius-sm: 14px;
+    --nav-h: 64px;
+    --maxw: 460px;
+  }
+
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0;
+    height: 100%;
+    background: var(--bg-2);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  body { overscroll-behavior-y: none; }
+  button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+  input, select { font-family: inherit; }
+  ::-webkit-scrollbar { width: 0; height: 0; }
+
+  #app {
+    max-width: var(--maxw);
+    margin: 0 auto;
+    min-height: 100%;
+    background: var(--bg);
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 0 60px rgba(0,0,0,.06);
+  }
+
+  /* ---------- Screen / scrolling ---------- */
+  #screen {
+    flex: 1;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: calc(var(--nav-h) + env(safe-area-inset-bottom, 0px) + 24px);
+  }
+  .pad { padding: 0 18px; }
+
+  /* ---------- Header ---------- */
+  .topbar {
+    padding: calc(env(safe-area-inset-top, 0px) + 18px) 18px 6px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+  }
+  .topbar .eyebrow { font-size: 13px; color: var(--muted); font-weight: 600; letter-spacing: .2px; }
+  .topbar h1 { font-size: 26px; font-weight: 800; margin: 2px 0 0; letter-spacing: -.6px; }
+  .icon-btn {
+    width: 40px; height: 40px; border-radius: 12px;
+    display: grid; place-items: center;
+    background: var(--surface); color: var(--muted);
+    box-shadow: var(--shadow);
+  }
+  .icon-btn:active { transform: scale(.94); }
+  .icon-btn svg { width: 20px; height: 20px; }
+
+  /* ---------- Cards ---------- */
+  .card {
+    background: var(--surface);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 18px;
+  }
+  .section-title {
+    font-size: 13px; font-weight: 700; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .6px;
+    margin: 22px 4px 10px;
+  }
+
+  /* ---------- Allowance hero ---------- */
+  .hero {
+    margin: 12px 18px 0;
+    border-radius: 26px;
+    padding: 26px 24px 24px;
+    color: #fff;
+    background: linear-gradient(150deg, #10b981 0%, #059669 60%, #047857 100%);
+    box-shadow: 0 16px 40px rgba(5,150,105,.32);
+    position: relative;
+    overflow: hidden;
+  }
+  .hero::after {
+    content: ""; position: absolute; right: -40px; top: -50px;
+    width: 180px; height: 180px; border-radius: 50%;
+    background: rgba(255,255,255,.10);
+  }
+  .hero .label { font-size: 14px; font-weight: 600; opacity: .92; }
+  .hero .big {
+    font-size: 52px; font-weight: 800; letter-spacing: -1.5px;
+    margin: 4px 0 0; line-height: 1.05;
+  }
+  .hero .big .cents { font-size: 30px; opacity: .85; font-weight: 700; }
+  .hero .sub { font-size: 13.5px; opacity: .9; margin-top: 8px; font-weight: 500; }
+
+  .progress {
+    height: 8px; border-radius: 99px; background: rgba(255,255,255,.28);
+    margin-top: 16px; overflow: hidden;
+  }
+  .progress > i { display: block; height: 100%; border-radius: 99px; background: #fff; transition: width .4s ease; }
+
+  /* stat tiles */
+  .tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 14px 18px 0; }
+  .tile { background: var(--surface); border-radius: var(--radius-sm); padding: 14px 16px; box-shadow: var(--shadow); }
+  .tile .k { font-size: 12.5px; color: var(--muted); font-weight: 600; }
+  .tile .v { font-size: 22px; font-weight: 800; letter-spacing: -.5px; margin-top: 3px; }
+  .tile .v.neg { color: var(--danger); }
+  .tile .v.pos { color: var(--accent-2); }
+
+  /* big button */
+  .btn {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    width: 100%; border-radius: 16px; padding: 16px;
+    font-size: 16px; font-weight: 700;
+    background: var(--text); color: #fff;
+    box-shadow: var(--shadow);
+    transition: transform .08s ease;
+  }
+  .btn:active { transform: scale(.985); }
+  .btn.accent { background: linear-gradient(135deg,#10b981,#059669); }
+  .btn.invest { background: linear-gradient(135deg,#6366f1,#4f46e5); }
+  .btn.ghost { background: var(--surface); color: var(--text); border: 1px solid var(--border); box-shadow: none; }
+  .btn.danger { background: var(--danger-soft); color: var(--danger); box-shadow: none; }
+  .btn svg { width: 20px; height: 20px; }
+  .btn[disabled] { opacity: .45; pointer-events: none; }
+
+  /* ---------- Pool cards ---------- */
+  .pool {
+    background: var(--surface); border-radius: var(--radius);
+    box-shadow: var(--shadow); padding: 16px 18px; margin-bottom: 12px;
+    position: relative;
+  }
+  .pool .row1 { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+  .pool .name { font-size: 17px; font-weight: 800; letter-spacing: -.3px; }
+  .pool .bal { font-size: 19px; font-weight: 800; letter-spacing: -.4px; white-space: nowrap; }
+  .pool .meta { display: flex; justify-content: space-between; align-items: flex-end; margin-top: 12px; }
+  .pool .contrib { color: var(--accent-2); font-weight: 700; font-size: 15px; }
+  .pool .contrib small { color: var(--muted); font-weight: 600; }
+  .pool .when { font-size: 12.5px; color: var(--muted); text-align: right; }
+  .pool .when b { display: block; color: var(--text); font-weight: 700; font-size: 13px; }
+  .pool .bar { height: 6px; border-radius: 99px; background: var(--bg-2); margin-top: 12px; overflow: hidden; }
+  .pool .bar > i { display: block; height: 100%; background: linear-gradient(90deg,#34d399,#10b981); border-radius: 99px; }
+  .pool .del {
+    position: absolute; top: 12px; right: 12px;
+    width: 30px; height: 30px; border-radius: 9px;
+    display: grid; place-items: center; color: var(--faint);
+    background: var(--surface-2);
+  }
+  .pool .del:active { transform: scale(.9); color: var(--danger); }
+  .pool .del svg { width: 16px; height: 16px; }
+  .pool .bal { padding-right: 34px; }
+
+  /* ---------- Investment ---------- */
+  .invest-hero {
+    margin: 12px 18px 0; border-radius: 26px; padding: 24px;
+    color: #fff; position: relative; overflow: hidden;
+    background: linear-gradient(150deg,#818cf8 0%, #6366f1 55%, #4f46e5 100%);
+    box-shadow: 0 16px 40px rgba(79,70,229,.34);
+  }
+  .invest-hero .lockrow { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 14px; opacity: .95; }
+  .invest-hero .lockrow svg { width: 18px; height: 18px; }
+  .invest-hero .big { font-size: 46px; font-weight: 800; letter-spacing: -1.4px; margin: 8px 0 0; }
+  .invest-hero .big .cents { font-size: 26px; opacity: .85; }
+  .invest-hero .sub { font-size: 13px; opacity: .9; margin-top: 10px; line-height: 1.4; }
+  .invest-hero::after {
+    content: ""; position: absolute; right: -30px; bottom: -60px;
+    width: 170px; height: 170px; border-radius: 50%; background: rgba(255,255,255,.10);
+  }
+
+  .ledger { display: flex; justify-content: space-between; align-items: center; padding: 13px 4px; border-bottom: 1px solid var(--border); }
+  .ledger:last-child { border-bottom: none; }
+  .ledger .lf { font-size: 14.5px; font-weight: 600; }
+  .ledger .ld { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .ledger .la { font-size: 15px; font-weight: 800; color: var(--invest-2); }
+
+  /* ---------- History ---------- */
+  .hday { background: var(--surface); border-radius: var(--radius-sm); box-shadow: var(--shadow); padding: 14px 16px; margin-bottom: 10px; }
+  .hday .top { display: flex; justify-content: space-between; align-items: baseline; }
+  .hday .date { font-size: 15px; font-weight: 700; }
+  .hday .spent { font-size: 15px; font-weight: 800; }
+  .hday .sub { font-size: 12.5px; color: var(--muted); margin-top: 3px; }
+  .hday .bar { height: 6px; border-radius: 99px; background: var(--bg-2); margin-top: 10px; overflow: hidden; }
+  .hday .bar > i { display: block; height: 100%; border-radius: 99px; }
+
+  /* ---------- Expense rows ---------- */
+  .exp { display: flex; align-items: center; gap: 12px; padding: 12px 4px; border-bottom: 1px solid var(--border); }
+  .exp:last-child { border-bottom: none; }
+  .exp .dot { width: 36px; height: 36px; border-radius: 11px; background: var(--accent-soft); color: var(--accent-2); display: grid; place-items: center; flex: none; font-weight: 800; }
+  .exp .info { flex: 1; min-width: 0; }
+  .exp .info .t { font-size: 14.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .exp .info .s { font-size: 12px; color: var(--muted); }
+  .exp .amt { font-size: 15.5px; font-weight: 800; }
+  .exp .x { color: var(--faint); width: 30px; height: 30px; display: grid; place-items: center; }
+
+  .deficit-banner { display: flex; align-items: center; gap: 12px; margin: 14px 18px 0; padding: 14px 16px; border-radius: 16px; background: #fef2f2; border: 1px solid #fecaca; color: var(--danger); }
+  .deficit-banner svg { width: 24px; height: 24px; flex: none; }
+  .deficit-banner b { display: block; font-size: 15px; font-weight: 800; }
+  .deficit-banner span { font-size: 12.5px; opacity: .85; }
+
+  .empty { text-align: center; color: var(--muted); padding: 40px 24px; }
+  .empty .emoji { font-size: 40px; }
+  .empty p { margin: 12px 0 0; font-size: 14.5px; line-height: 1.5; }
+
+  /* ---------- Forms ---------- */
+  .field { margin-bottom: 16px; }
+  .field > label { display: block; font-size: 13px; font-weight: 700; color: var(--muted); margin: 0 4px 7px; }
+  .input {
+    width: 100%; background: var(--surface); border: 1.5px solid var(--border);
+    border-radius: 14px; padding: 15px 16px; font-size: 16px; font-weight: 600; color: var(--text);
+    outline: none; transition: border-color .15s;
+  }
+  .input:focus { border-color: var(--accent); }
+  .amount-wrap { position: relative; }
+  .amount-wrap .sym { position: absolute; left: 16px; top: 50%; transform: translateY(-50%); font-size: 20px; font-weight: 800; color: var(--muted); }
+  .amount-wrap .input { padding-left: 38px; font-size: 24px; font-weight: 800; letter-spacing: -.5px; }
+
+  .seg { display: flex; background: var(--bg-2); border-radius: 13px; padding: 4px; gap: 4px; }
+  .seg button { flex: 1; padding: 9px; border-radius: 10px; font-size: 13.5px; font-weight: 700; color: var(--muted); }
+  .seg button.on { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+
+  .dur-row { display: flex; gap: 10px; }
+  .dur-row .input.num { flex: 1; }
+  .dur-row select.input { flex: 1.1; -webkit-appearance: none; appearance: none; background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' fill='none' stroke='%236b7280' stroke-width='2'><path d='M3 5l4 4 4-4'/></svg>"); background-repeat: no-repeat; background-position: right 16px center; }
+
+  .preview { background: var(--accent-soft); border-radius: 14px; padding: 14px 16px; font-size: 13.5px; color: var(--accent-2); font-weight: 600; line-height: 1.5; }
+  .preview.invest { background: var(--invest-soft); color: var(--invest-2); }
+  .preview b { font-weight: 800; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 9px; }
+  .chip { padding: 11px 16px; border-radius: 12px; background: var(--surface); border: 1.5px solid var(--border); font-size: 17px; font-weight: 700; min-width: 52px; text-align: center; }
+  .chip.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-2); }
+
+  /* ---------- Goals ---------- */
+  .goal { background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px 18px; margin-bottom: 12px; position: relative; }
+  .goal.full { background: linear-gradient(150deg,#ecfdf5,#f0fdf4); border: 1px solid #bbf7d0; }
+  .goal .row1 { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+  .goal .name { font-size: 17px; font-weight: 800; letter-spacing: -.3px; }
+  .goal .nums { font-size: 14px; font-weight: 700; color: var(--muted); white-space: nowrap; }
+  .goal .nums b { color: var(--text); }
+  .goal .bar { height: 9px; border-radius: 99px; background: var(--bg-2); margin-top: 12px; overflow: hidden; }
+  .goal .bar > i { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg,#fbbf24,#f59e0b); transition: width .4s; }
+  .goal.full .bar > i { background: linear-gradient(90deg,#34d399,#10b981); }
+  .goal .status { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; gap: 10px; }
+  .goal .rate { font-size: 13.5px; color: var(--goal-2); font-weight: 700; }
+  .goal .rate small { color: var(--muted); font-weight: 600; }
+  .goal .ovr { font-size: 11.5px; color: var(--goal-2); font-weight: 700; margin-top: 6px; }
+  .ratio-row { display: flex; align-items: center; gap: 14px; margin-top: 14px; }
+  .ratio-row input[type="range"] { flex: 1; }
+  .ratio-row .ratio-val { font-size: 15px; font-weight: 800; color: var(--goal-2); min-width: 44px; text-align: right; }
+  .ratio-slider:disabled { opacity: .45; }
+  .goal .acts { display: flex; gap: 8px; margin-top: 14px; align-items: center; }
+  .goal .acts .btn { padding: 13px; font-size: 14.5px; }
+  .badge { font-size: 11px; font-weight: 800; padding: 5px 10px; border-radius: 99px; text-transform: uppercase; letter-spacing: .4px; white-space: nowrap; }
+  .badge.active { background: var(--goal-soft); color: var(--goal-2); }
+  .badge.queued { background: var(--bg-2); color: var(--muted); }
+  .badge.ready { background: #dcfce7; color: #059669; }
+  .btn.goal { background: linear-gradient(135deg,#f59e0b,#d97706); }
+  .linkbtn { background: none; color: var(--muted); font-weight: 700; font-size: 13.5px; padding: 13px 6px; flex: none; }
+  .linkbtn.danger { color: var(--danger); }
+  .split-card { background: linear-gradient(135deg,#fffbeb,#fef3c7); border: 1px solid #fde68a; box-shadow: none; }
+  input[type="range"] { width: 100%; accent-color: var(--goal); }
+  input[type="range"].inv-range { accent-color: var(--invest); }
+  .check-row { display: flex; justify-content: space-between; align-items: center; }
+  .check-row input[type="checkbox"] { width: 22px; height: 22px; accent-color: var(--goal); }
+
+  /* ---------- Currency / rates ---------- */
+  .cur-select { -webkit-appearance: none; appearance: none; background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' fill='none' stroke='%236b7280' stroke-width='2'><path d='M3 5l4 4 4-4'/></svg>"); background-repeat: no-repeat; background-position: right 16px center; padding-right: 40px; }
+  .bal-conv { text-align: right; font-size: 12px; color: var(--faint); font-weight: 600; margin-top: 1px; }
+  .rates-note { font-size: 12px; color: var(--muted); background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 9px 14px; margin: 12px 18px 0; text-align: center; }
+  .rates-note.warn { color: var(--goal-2); border-color: #fde68a; background: var(--goal-soft); }
+  .rates-note [data-action] { color: var(--accent-2); cursor: pointer; font-weight: 700; }
+  .amount-wrap .sym { font-size: 18px; }
+  .amount-wrap .input { padding-left: 46px; }
+
+  /* ---------- Bottom nav ---------- */
+  nav#tabs {
+    position: fixed; bottom: 0; left: 50%; transform: translateX(-50%);
+    width: 100%; max-width: var(--maxw);
+    height: calc(var(--nav-h) + env(safe-area-inset-bottom, 0px));
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    background: rgba(255,255,255,.86);
+    backdrop-filter: saturate(160%) blur(18px);
+    -webkit-backdrop-filter: saturate(160%) blur(18px);
+    border-top: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-around;
+    z-index: 50;
+  }
+  nav#tabs button {
+    flex: 1; height: var(--nav-h); display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 3px;
+    color: var(--faint); font-size: 10.5px; font-weight: 700;
+  }
+  nav#tabs button svg { width: 23px; height: 23px; }
+  nav#tabs button.on { color: var(--accent-2); }
+  nav#tabs button.on.invest-tab { color: var(--invest-2); }
+  nav#tabs .add { flex: 0 0 auto; }
+  nav#tabs .add .fab {
+    width: 56px; height: 56px; border-radius: 19px; margin-top: -22px;
+    background: linear-gradient(135deg,#10b981,#059669); color: #fff;
+    display: grid; place-items: center;
+    box-shadow: 0 10px 24px rgba(5,150,105,.42);
+    transition: transform .1s;
+  }
+  nav#tabs .add:active .fab { transform: scale(.92); }
+  nav#tabs .add .fab svg { width: 28px; height: 28px; }
+
+  /* ---------- Modal / sheet ---------- */
+  #modal-root { position: fixed; inset: 0; z-index: 100; display: none; }
+  #modal-root.open { display: block; }
+  .scrim { position: absolute; inset: 0; background: rgba(15,23,42,.42); opacity: 0; transition: opacity .22s; }
+  #modal-root.open .scrim { opacity: 1; }
+  .sheet {
+    position: absolute; left: 50%; bottom: 0; transform: translateX(-50%) translateY(100%);
+    width: 100%; max-width: var(--maxw);
+    background: var(--bg); border-radius: 26px 26px 0 0;
+    padding: 10px 18px calc(env(safe-area-inset-bottom, 0px) + 22px);
+    box-shadow: var(--shadow-lg);
+    transition: transform .26s cubic-bezier(.32,.72,0,1);
+    max-height: 88vh; overflow-y: auto;
+  }
+  #modal-root.open .sheet { transform: translateX(-50%) translateY(0); }
+  .sheet .grab { width: 40px; height: 5px; border-radius: 99px; background: #d8dbe2; margin: 6px auto 16px; }
+  .sheet h2 { font-size: 21px; font-weight: 800; margin: 0 4px 16px; letter-spacing: -.4px; }
+
+  /* setup overlay */
+  #setup { position: fixed; inset: 0; z-index: 200; background: var(--bg); display: none; flex-direction: column; justify-content: center; padding: 28px; }
+  #setup.show { display: flex; }
+  #setup .logo { width: 64px; height: 64px; border-radius: 20px; background: linear-gradient(135deg,#10b981,#059669); display: grid; place-items: center; color: #fff; margin: 0 auto 18px; box-shadow: 0 12px 30px rgba(5,150,105,.4); }
+  #setup .logo svg { width: 34px; height: 34px; }
+  #setup h1 { text-align: center; font-size: 26px; font-weight: 800; margin: 0 0 6px; letter-spacing: -.6px; }
+  #setup p.lead { text-align: center; color: var(--muted); font-size: 14.5px; margin: 0 0 28px; line-height: 1.5; }
+
+  .fade-in { animation: fade .3s ease; }
+  @keyframes fade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div id="screen"></div>
+  <nav id="tabs"></nav>
+</div>
+
+<div id="modal-root"><div class="scrim" data-action="close-modal"></div><div class="sheet" id="sheet"></div></div>
+
+<div id="setup">
+  <div class="logo">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+  </div>
+  <h1>Welcome to Flow</h1>
+  <p class="lead">A time-dilated budget. Income becomes pools that stretch across time — every unspent day quietly grows tomorrow.</p>
+  <div class="field">
+    <label>Choose your display currency</label>
+    <div class="chips" id="cur-chips"></div>
+  </div>
+  <div class="field">
+    <select class="input cur-select" id="cur-select"></select>
+  </div>
+  <button class="btn accent" data-action="finish-setup" style="margin-top:8px">Start budgeting</button>
+</div>
+
+<script>
+"use strict";
+(function () {
+  // ============================================================ STORE
+  const KEY = "tdbs_state_v1";
+  let state = load();
+  let tab = "home";
+  let addMode = "duration"; // or "date"
+  let liqMode = "duration";
+  let goalOverrideOn = false;
+  let investOn = false;     // "invest on arrival" toggle on the Add-income form
+  let investPct = 10;
+
+  function load() {
+    try { const raw = localStorage.getItem(KEY); return raw ? JSON.parse(raw) : null; }
+    catch (e) { return null; }
+  }
+  function save() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {} }
+
+  // ============================================================ DATE HELPERS
+  function startOfDay(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
+  function todayDate() { return startOfDay(new Date()); }
+  function parseISO(s) { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); }
+  function fmtISO(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
+  function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+  function addMonths(d, n) { return new Date(d.getFullYear(), d.getMonth() + n, d.getDate()); }
+  function addYears(d, n) { return new Date(d.getFullYear() + n, d.getMonth(), d.getDate()); }
+  function daysBetween(a, b) { return Math.round((startOfDay(b) - startOfDay(a)) / 86400000); }
+  // inclusive days remaining: today counts as 1
+  function daysRemaining(pool, ref) { return Math.max(1, daysBetween(ref || todayDate(), parseISO(pool.endDate)) + 1); }
+
+  function fmtMonthYear(d) { return d.toLocaleDateString(undefined, { month: "short", year: "numeric" }); }
+  function fmtDayMonth(d) { return d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" }); }
+  function fmtFull(d) { return d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }); }
+
+  function horizonText(pool, ref) {
+    const dr = daysRemaining(pool, ref);
+    if (dr <= 1) return "Last day";
+    if (dr <= 45) return dr + " days remaining";
+    return dr + " days · ends " + fmtMonthYear(parseISO(pool.endDate));
+  }
+
+  // ============================================================ CURRENCY & MONEY
+  const CURRENCIES = {
+    USD: { sym: "$", name: "US Dollar" }, EUR: { sym: "€", name: "Euro" },
+    GBP: { sym: "£", name: "British Pound" }, JPY: { sym: "¥", name: "Japanese Yen" },
+    CNY: { sym: "CN¥", name: "Chinese Yuan" }, AUD: { sym: "A$", name: "Australian Dollar" },
+    CAD: { sym: "C$", name: "Canadian Dollar" }, CHF: { sym: "Fr", name: "Swiss Franc" },
+    INR: { sym: "₹", name: "Indian Rupee" }, BRL: { sym: "R$", name: "Brazilian Real" },
+    MXN: { sym: "MX$", name: "Mexican Peso" }, ARS: { sym: "AR$", name: "Argentine Peso" },
+    CLP: { sym: "CL$", name: "Chilean Peso" }, SGD: { sym: "S$", name: "Singapore Dollar" },
+    HKD: { sym: "HK$", name: "Hong Kong Dollar" }, NZD: { sym: "NZ$", name: "New Zealand Dollar" },
+    SEK: { sym: "kr", name: "Swedish Krona" }, NOK: { sym: "kr", name: "Norwegian Krone" },
+    DKK: { sym: "kr", name: "Danish Krone" }, PLN: { sym: "zł", name: "Polish Złoty" },
+    ZAR: { sym: "R", name: "South African Rand" }, KRW: { sym: "₩", name: "South Korean Won" },
+    TRY: { sym: "₺", name: "Turkish Lira" }, THB: { sym: "฿", name: "Thai Baht" }
+  };
+  // Map the old single-symbol setting onto a code when migrating legacy state.
+  const SYMBOL_TO_CODE = { "$": "USD", "€": "EUR", "£": "GBP", "¥": "JPY", "₹": "INR", "R$": "BRL", "$U": "USD", "₽": "EUR", "₩": "KRW", "Fr": "CHF", "kr": "SEK", "zł": "PLN", "₺": "TRY", "฿": "THB" };
+
+  function curSym(code) { return (CURRENCIES[code] && CURRENCIES[code].sym) || (code ? code + " " : "$"); }
+  function dispCur() { return (state && state.displayCurrency) || "USD"; }
+  function numStr(n) { if (!isFinite(n)) n = 0; return Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  // Format an amount in an explicit currency.
+  function fmtAmt(n, code) { return (n < 0 ? "-" : "") + curSym(code) + numStr(n); }
+  // Aggregates and already-in-display amounts go through money()/moneyParts().
+  function money(n) { return fmtAmt(n, dispCur()); }
+  function partsFor(n, code) { const s = fmtAmt(n, code); const dot = s.lastIndexOf("."); return dot === -1 ? [s, ""] : [s.slice(0, dot), s.slice(dot)]; }
+  function moneyParts(n) { return partsFor(n, dispCur()); }
+
+  // Convert between currencies via cached base-relative rates; falls back to 1:1 if unavailable.
+  function convert(amount, from, to) {
+    if (from === to || !amount) return amount;
+    const R = state.rates && state.rates.rates;
+    if (!R || !R[from] || !R[to]) return amount;
+    return amount * (R[to] / R[from]);
+  }
+  function canConvert(from, to) {
+    if (from === to) return false;
+    const R = state.rates && state.rates.rates;
+    return !!(R && R[from] && R[to]);
+  }
+  // Secondary "≈ $57.40 USD" line; empty when native == display or rates are missing.
+  function convLine(amount, code) {
+    const d = dispCur();
+    if (!canConvert(code, d)) return "";
+    return "≈ " + fmtAmt(convert(amount, code, d), d) + " " + d;
+  }
+  function curOptions(selected) {
+    return Object.keys(CURRENCIES).map(c =>
+      `<option value="${c}" ${c === selected ? "selected" : ""}>${CURRENCIES[c].sym} · ${c} — ${CURRENCIES[c].name}</option>`).join("");
+  }
+  function currencySelect(id, selected) { return `<select class="input cur-select" id="${id}">${curOptions(selected)}</select>`; }
+
+  // ---- Exchange rates (ExchangeRate-API) ----
+  function ratesAgeDays() { return (state.rates && state.rates.fetched) ? Math.floor((Date.now() - state.rates.fetched) / 86400000) : null; }
+  function ratesNotice() {
+    if (!state.rates) return `<div class="rates-note warn">Exchange rates unavailable — showing native amounts only · <span data-action="refresh-rates">retry</span></div>`;
+    const d = ratesAgeDays();
+    if (d >= 1) return `<div class="rates-note">Rates from ${d} day${d > 1 ? "s" : ""} ago · <span data-action="refresh-rates">refresh</span></div>`;
+    return "";
+  }
+  async function refreshRates(force) {
+    if (!state) return;
+    const now = Date.now();
+    // The source refreshes once a day, so cache for 24h and only re-fetch past that.
+    if (!force && state.rates && state.rates.fetched && (now - state.rates.fetched) < 24 * 3600 * 1000) return;
+    try {
+      // ExchangeRate-API open endpoint (no key, USD-based, ~160 currencies incl. ARS).
+      const res = await fetch("https://open.er-api.com/v6/latest/USD");
+      if (!res.ok) throw new Error("http " + res.status);
+      const data = await res.json();
+      if (data.result !== "success" || !data.rates) throw new Error("bad payload");
+      const base = data.base_code || "USD";
+      const rates = data.rates;
+      rates[base] = 1;   // base is already present; keep it explicit
+      const date = data.time_last_update_unix
+        ? new Date(data.time_last_update_unix * 1000).toISOString().slice(0, 10)
+        : (state.rates && state.rates.date) || "";
+      state.rates = { base: base, rates: rates, date: date, fetched: now };
+      reconcileDay();   // new rates change converted allowance/spend, so re-settle any deficit
+      save(); render();
+    } catch (e) {
+      if (force) { save(); render(); }   // surface the stale-rate notice
+    }
+  }
+
+  // ============================================================ CORE ENGINE
+  function contribution(pool, ref) {
+    const dr = daysRemaining(pool, ref);
+    return dr > 0 ? pool.balance / dr : pool.balance;
+  }
+  // Aggregates are computed in the display currency, since pools may differ in native currency.
+  function totalAllowance(ref) {
+    const d = dispCur();
+    return state.pools.reduce((s, p) => s + convert(contribution(p, ref), p.cur, d), 0);
+  }
+  function totalSpendable() {
+    const d = dispCur();
+    return state.pools.reduce((s, p) => s + convert(p.balance, p.cur, d), 0);
+  }
+  // Today's spend in display currency (expenses may each be in a different native currency).
+  function todaySpent() {
+    const d = dispCur();
+    return state.todayExpenses.reduce((s, e) => s + convert(e.amount, e.cur || d, d), 0);
+  }
+
+  // Deduct a day's spend (given in DISPLAY currency) across pools, proportional to each pool's
+  // contribution. Each pool's share is converted back to its native currency before subtracting.
+  // Clamps at 0 and redistributes any over-spend shortfall to pools with balance left.
+  function deductSpending(amountDisp, ref) {
+    if (amountDisp <= 0) return;
+    const d = dispCur();
+    let remaining = amountDisp, guard = 0;
+    while (remaining > 1e-6 && guard++ < 60) {
+      const live = state.pools.filter(p => p.balance > 1e-9);
+      if (!live.length) break;
+      let basis = live.map(p => convert(contribution(p, ref), p.cur, d));
+      let totW = basis.reduce((a, b) => a + b, 0);
+      if (totW <= 1e-9) { basis = live.map(p => convert(p.balance, p.cur, d)); totW = basis.reduce((a, b) => a + b, 0); }
+      if (totW <= 1e-9) break;
+      let done = 0;
+      for (let i = 0; i < live.length; i++) {
+        const balDisp = convert(live[i].balance, live[i].cur, d);
+        const takeDisp = Math.min(balDisp, remaining * (basis[i] / totW));
+        live[i].balance -= convert(takeDisp, d, live[i].cur);
+        if (live[i].balance < 1e-9) live[i].balance = 0;
+        done += takeDisp;
+      }
+      remaining -= done;
+      if (done <= 1e-9) break;
+    }
+  }
+
+  // Expire pools whose end date is now in the past relative to `cur` (the new current day).
+  // Surplus flows to the longest-horizon surviving regular pool; else into investment.
+  function expirePools(cur) {
+    const expiring = state.pools.filter(p => parseISO(p.endDate) < cur);
+    if (!expiring.length) return;
+    const survivors = state.pools.filter(p => parseISO(p.endDate) >= cur);
+    for (const p of expiring) {
+      if (p.balance <= 1e-9) continue;
+      let target = null;
+      for (const s of survivors) if (!target || parseISO(s.endDate) > parseISO(target.endDate)) target = s;
+      if (target) {
+        target.balance += convert(p.balance, p.cur, target.cur);   // convert at the transfer
+      } else {
+        const inv = state.investment;
+        const amt = convert(p.balance, p.cur, inv.cur);
+        inv.balance += amt;
+        inv.surpluses.unshift({ date: fmtISO(cur), amount: amt, cur: inv.cur, from: p.name });
+      }
+    }
+    state.pools = survivors;
+  }
+
+  // ---- Spend settlement ----
+  // Pull `amountDisp` (display currency) from pools SHORTEST-horizon-first, then the investment
+  // pool once pools are exhausted. Records each native debit into `log` so it can be reversed.
+  // Anything left uncovered (fully overdrawn) is simply unbacked.
+  function pullSpend(amountDisp, log) {
+    if (amountDisp <= 1e-9) return;
+    const d = dispCur();
+    let rem = amountDisp;
+    const order = state.pools.slice().sort((a, b) => parseISO(a.endDate) - parseISO(b.endDate));
+    for (const p of order) {
+      if (rem <= 1e-9) break;
+      const balDisp = convert(p.balance, p.cur, d);
+      if (balDisp <= 1e-9) continue;
+      const takeDisp = Math.min(balDisp, rem);
+      const takeNative = convert(takeDisp, d, p.cur);
+      p.balance -= takeNative; if (p.balance < 1e-9) p.balance = 0;
+      log.push({ id: p.id, amount: takeNative });
+      rem -= takeDisp;
+    }
+    if (rem > 1e-9) {                                    // pools exhausted -> draw from investment
+      const inv = state.investment;
+      const balDisp = convert(inv.balance, inv.cur, d);
+      const takeDisp = Math.min(balDisp, rem);
+      if (takeDisp > 1e-9) {
+        const takeNative = convert(takeDisp, d, inv.cur);
+        inv.balance -= takeNative; if (inv.balance < 1e-9) inv.balance = 0;
+        log.push({ id: "investment", amount: takeNative });
+      }
+    }
+  }
+  // Restore balances debited by a spend log, in REVERSE shortest-horizon-first order (the
+  // last-debited entity — longest pool or investment — is refunded first). Skips any entity
+  // that no longer exists; clears the log.
+  function reverseDebits(log) {
+    if (!log) return;
+    for (let i = log.length - 1; i >= 0; i--) {
+      const dbt = log[i];
+      if (dbt.id === "investment") state.investment.balance += dbt.amount;
+      else { const p = state.pools.find(x => x.id === dbt.id); if (p) p.balance += dbt.amount; }
+    }
+    log.length = 0;
+  }
+  // Recompute today's (spend-free) allowance snapshot, then settle the FULL day's spend against
+  // current balances, shortest-horizon-first. Idempotent — safe after any expense/pool/currency
+  // change; deleting an expense re-pulls a smaller total, restoring balances in reverse order.
+  function reconcileDay() {
+    if (!state.spendDebits) state.spendDebits = [];
+    reverseDebits(state.spendDebits);
+    state.todayAllowance = totalAllowance();
+    const spent = todaySpent();
+    if (spent > 1e-9) pullSpend(spent, state.spendDebits);
+  }
+
+  // Replay every day between the stored current day and the real today.
+  function rollIfNeeded() {
+    let cur = parseISO(state.currentDate);
+    const today = todayDate();
+    let guard = 0;
+    if (!state.spendDebits) state.spendDebits = [];
+    while (cur < today && guard++ < 4000) {
+      const d = dispCur();
+      reverseDebits(state.spendDebits);          // restore spend-free balances for a clean settlement
+      const allowance = totalAllowance(cur);     // display currency, spend-free
+      const spent = todaySpent();
+      // Leftover split: a configurable share of any unspent allowance funds goals (by ratio,
+      // cascading); the rest simply repools — it re-spreads over the remaining days.
+      const leftover = Math.max(0, allowance - spent);
+      let saved = 0;
+      if (state.goals.length && leftover > 1e-9 && state.goalSplit > 0) {
+        const res = distributeToGoals(leftover * (state.goalSplit / 100), state.goals);   // dep in display cur
+        state.goals.forEach(g => { if (res.dep[g.id]) g.balance += convert(res.dep[g.id], d, g.cur); });
+        saved = res.placed;
+      }
+      pullSpend(spent, []);          // expenses: settled shortest-horizon-first → investment (now permanent)
+      deductSpending(saved, cur);    // goal funding only — the repool of leftover into goals
+      state.history.unshift({ date: state.currentDate, spent: spent, allowance: allowance, saved: saved, cur: d });
+      if (state.history.length > 1200) state.history.length = 1200;
+      cur = addDays(cur, 1);
+      state.currentDate = fmtISO(cur);
+      expirePools(cur);
+      state.todayExpenses = [];
+      state.spendDebits = [];        // the day's spend is settled and permanent
+    }
+    state.currentDate = fmtISO(today);
+    reconcileDay();   // snapshot today's spend-free allowance + settle the new current day's spend
+  }
+
+  // ============================================================ ACTIONS
+  function createPool(name, amount, endDate, cur) {
+    cur = cur || dispCur();
+    state.pools.push({
+      id: uid(), name: name, balance: amount,
+      endDate: fmtISO(endDate), createdDate: state.currentDate, initial: amount, cur: cur
+    });
+    state.lastCurrency = cur;
+    reconcileDay();   // new income raises today's allowance and may shrink a live deficit
+  }
+  function uid() { return "p" + (state.seq = (state.seq || 0) + 1) + "_" + state.currentDate; }
+
+  function addExpense(amount, note, cur) {
+    cur = cur || state.lastCurrency || dispCur();
+    state.todayExpenses.unshift({ id: uid(), amount: amount, cur: cur, note: note || "", time: clockNow() });
+    state.lastCurrency = cur;
+    reconcileDay();   // absorb any overspend deficit immediately
+    save();
+  }
+  function removeExpense(id) {
+    const i = state.todayExpenses.findIndex(e => e.id === id);
+    if (i >= 0) { state.todayExpenses.splice(i, 1); reconcileDay(); save(); }
+  }
+  // Amount is entered in the investment currency; the new pool is created in `poolCur`.
+  function liquidate(amount, name, endDate, poolCur) {
+    const inv = state.investment;
+    amount = Math.min(amount, inv.balance);
+    if (amount <= 0) return;
+    inv.balance -= amount;
+    const target = poolCur || inv.cur;
+    createPool(name || "Liquidation", convert(amount, inv.cur, target), endDate, target);
+    save();
+  }
+  // Direct contribution into the investment pool (e.g. "invest on arrival" when adding income).
+  function contributeToInvestment(amount, cur, fromName) {
+    const inv = state.investment;
+    const amt = convert(amount, cur, inv.cur);
+    inv.balance += amt;
+    inv.surpluses.unshift({ date: state.currentDate, amount: amt, cur: inv.cur, from: "Invest on arrival: " + fromName });
+  }
+  // Fully destructive: the pool's remaining balance disappears. No redistribution, no undo.
+  function deletePool(id) {
+    if (state.spendDebits) state.spendDebits = state.spendDebits.filter(dbt => dbt.id !== id);
+    state.pools = state.pools.filter(p => p.id !== id);
+    reconcileDay();   // today's allowance drops with the pool; re-settle the day's spend on what remains
+    save();
+  }
+  function clockNow() { const d = new Date(); return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }); }
+
+  // ---- Goals (ratio-based funding) ----
+  // Trailing-average daily leftover, used only to *estimate* fill amounts for display.
+  function estDailyLeftover() {
+    const h = state.history.slice(0, 14);
+    if (h.length) {
+      const d = dispCur();
+      return h.reduce((s, e) => s + convert(Math.max(0, (e.allowance || 0) - (e.spent || 0)), e.cur || d, d), 0) / h.length;
+    }
+    return Math.max(0, totalAllowance() - todaySpent());
+  }
+  // Scale a set of goals' ratios so they sum to `total`. If they're all zero, split equally.
+  function distributeRatioAmong(goals, total) {
+    if (!goals.length) return;
+    const s = goals.reduce((a, g) => a + (g.ratio || 0), 0);
+    if (s <= 1e-9) { const e = total / goals.length; goals.forEach(g => g.ratio = e); }
+    else goals.forEach(g => g.ratio = (g.ratio || 0) * total / s);
+  }
+  // Distribute `potDisp` (DISPLAY currency) across goals by ratio, capped at each goal's
+  // remaining need (converted to display). Overflow from a capped goal cascades — within the
+  // same day — to the rest proportionally to ratio. Pure: never mutates balances; returns
+  // per-id deposits IN DISPLAY CURRENCY, total placed, and unplaced.
+  function distributeToGoals(potDisp, goals) {
+    const d = dispCur();
+    const dep = {};
+    goals.forEach(g => dep[g.id] = 0);
+    let left = potDisp, guard = 0;
+    while (left > 1e-9 && guard++ < 200) {
+      const room = goals.filter(g => (convert(g.target - g.balance, g.cur, d) - dep[g.id]) > 1e-9);
+      if (!room.length) break;
+      const totR = room.reduce((a, g) => a + (g.ratio || 0), 0);
+      let placed = 0;
+      for (const g of room) {
+        const need = convert(g.target - g.balance, g.cur, d) - dep[g.id];
+        const want = totR > 1e-9 ? left * ((g.ratio || 0) / totR) : left / room.length;
+        const add = Math.min(need, want);
+        dep[g.id] += add; placed += add;
+      }
+      left -= placed;
+      if (placed <= 1e-9) break;
+    }
+    return { dep: dep, placed: potDisp - left, unplaced: left };
+  }
+  // Estimated per-goal daily fill: trailing leftover × split, distributed by current ratios.
+  function estimatedFills() {
+    const pot = estDailyLeftover() * (state.goalSplit / 100);
+    if (!state.goals.length || pot <= 1e-9) return {};
+    return distributeToGoals(pot, state.goals).dep;
+  }
+  function createGoal(name, target, manualRatio, cur) {
+    cur = cur || dispCur();
+    const g = { id: uid(), name: name || "Goal", target: target, balance: 0, createdDate: state.currentDate, ratio: 0, cur: cur };
+    state.lastCurrency = cur;
+    state.goals.push(g);
+    if (state.goals.length === 1) { g.ratio = 100; save(); return; }   // sole goal owns 100%
+    if (manualRatio == null) {
+      const e = 100 / state.goals.length;          // no ratio chosen -> split equally across all
+      state.goals.forEach(x => x.ratio = e);
+    } else {
+      g.ratio = Math.max(0, Math.min(100, manualRatio));
+      distributeRatioAmong(state.goals.filter(x => x.id !== g.id), 100 - g.ratio);
+    }
+    save();
+  }
+  // Set one goal's ratio; the rest rebalance proportionally so the total stays 100%.
+  function setGoalRatio(id, r) {
+    const g = state.goals.find(x => x.id === id);
+    if (!g) return;
+    if (state.goals.length <= 1) { g.ratio = 100; save(); return; }
+    r = Math.max(0, Math.min(100, r));
+    g.ratio = r;
+    distributeRatioAmong(state.goals.filter(x => x.id !== id), 100 - r);
+    save();
+  }
+  // Spend a completed goal: money is used and leaves the system; remaining ratios rebalance.
+  function spendGoal(id) {
+    const i = state.goals.findIndex(g => g.id === id);
+    if (i < 0) return;
+    state.goals.splice(i, 1);
+    distributeRatioAmong(state.goals, 100);
+    save();
+  }
+  // Cancel a goal: rebalance remaining ratios, then redistribute its balance to the remaining
+  // goals proportionally by ratio (cascading when one fills); any overflow -> investment.
+  function cancelGoal(id) {
+    const i = state.goals.findIndex(g => g.id === id);
+    if (i < 0) return;
+    const g = state.goals[i];
+    state.goals.splice(i, 1);
+    distributeRatioAmong(state.goals, 100);
+    if (g.balance > 1e-9) {
+      const d = dispCur();
+      const res = distributeToGoals(convert(g.balance, g.cur, d), state.goals);   // pot in display cur
+      state.goals.forEach(x => { if (res.dep[x.id]) x.balance += convert(res.dep[x.id], d, x.cur); });
+      if (res.unplaced > 1e-9) {
+        const inv = state.investment;
+        const amt = convert(res.unplaced, d, inv.cur);
+        inv.balance += amt;
+        inv.surpluses.unshift({ date: state.currentDate, amount: amt, cur: inv.cur, from: "Goal: " + g.name });
+      }
+    }
+    save();
+  }
+  function setGoalSplit(pct) { state.goalSplit = Math.max(0, Math.min(100, pct)); save(); }
+  // Integer percentages (largest-remainder) that sum to exactly 100, for display.
+  function pctRound(vals) {
+    const floors = vals.map(v => Math.floor(v));
+    const rem = Math.round(100 - floors.reduce((a, b) => a + b, 0));
+    const order = vals.map((v, i) => [v - Math.floor(v), i]).sort((a, b) => b[0] - a[0]);
+    for (let k = 0; k < rem && k < order.length; k++) floors[order[k][1]]++;
+    return floors;
+  }
+
+  // ============================================================ ICONS
+  const I = {
+    home: '<path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>',
+    pools: '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>',
+    plus: '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
+    lock: '<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+    clock: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+    gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+    trash: '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
+    x: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+    arrow: '<line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>',
+    unlock: '<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>',
+    target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.4"/>',
+    check: '<polyline points="20 6 9 17 4 12"/>',
+    sliders: '<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>',
+    alert: '<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>'
+  };
+  const svg = (k, w) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${w || 2}" stroke-linecap="round" stroke-linejoin="round">${I[k]}</svg>`;
+
+  // ============================================================ RENDER
+  const screen = document.getElementById("screen");
+
+  function render() {
+    if (tab === "home") renderHome();
+    else if (tab === "pools") renderPools();
+    else if (tab === "goals") renderGoals();
+    else if (tab === "add") renderAdd();
+    else if (tab === "investment") renderInvestment();
+    else if (tab === "history") renderHistory();
+    renderTabs();
+  }
+
+  function renderTabs() {
+    const t = (id, key, icon, label) =>
+      `<button class="${tab === id ? "on" : ""} ${id === "investment" ? "invest-tab" : ""}" data-action="nav" data-tab="${id}">${svg(icon)}<span>${label}</span></button>`;
+    document.getElementById("tabs").innerHTML =
+      t("home", "home", "home", "Home") +
+      t("pools", "pools", "pools", "Pools") +
+      t("goals", "goals", "target", "Goals") +
+      `<button class="add" data-action="nav" data-tab="add"><span class="fab">${svg("plus", 2.4)}</span></button>` +
+      t("investment", "investment", "lock", "Invest") +
+      t("history", "history", "clock", "History");
+  }
+
+  function topbar(eyebrow, title, withGear) {
+    return `<div class="topbar"><div><div class="eyebrow">${eyebrow}</div><h1>${title}</h1></div>
+      ${withGear ? `<button class="icon-btn" data-action="settings">${svg("gear")}</button>` : ""}</div>`;
+  }
+
+  // ---------- HOME
+  function renderHome() {
+    const allowance = state.todayAllowance || 0;   // stable deficit-free snapshot for the day
+    const spent = todaySpent();
+    const remaining = allowance - spent;
+    const inDeficit = remaining < -1e-9;
+    const fromInv = inDeficit && (state.spendDebits || []).some(x => x.id === "investment");
+    const pct = allowance > 0 ? Math.min(100, (spent / allowance) * 100) : (spent > 0 ? 100 : 0);
+    const [ai, ac] = moneyParts(allowance);
+    const dateLine = new Date().toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
+
+    let exp = "";
+    if (state.todayExpenses.length) {
+      exp = state.todayExpenses.map(e => {
+        const cl = convLine(e.amount, e.cur);
+        return `
+        <div class="exp">
+          <div class="dot">${curSym(e.cur)}</div>
+          <div class="info"><div class="t">${esc(e.note) || "Expense"}</div><div class="s">${e.time}${cl ? " · " + cl : ""}</div></div>
+          <div class="amt">-${fmtAmt(e.amount, e.cur).replace(/^-/, "")}</div>
+          <button class="x" data-action="del-expense" data-id="${e.id}">${svg("x")}</button>
+        </div>`;
+      }).join("");
+      exp = `<div class="section-title">Today's expenses</div><div class="card" style="padding:6px 16px">${exp}</div>`;
+    }
+
+    const noPools = state.pools.length === 0;
+
+    screen.innerHTML = `
+      ${topbar(dateLine, "Today", true)}
+      ${ratesNotice()}
+      <div class="hero fade-in">
+        <div class="label">Today's allowance</div>
+        <div class="big">${ai}<span class="cents">${ac}</span></div>
+        <div class="sub">${noPools ? "No active pools yet — add income to begin" : "from " + state.pools.length + " active pool" + (state.pools.length > 1 ? "s" : "")}</div>
+        <div class="progress"><i style="width:${pct}%"></i></div>
+      </div>
+
+      <div class="tiles">
+        <div class="tile"><div class="k">Spent today</div><div class="v">${money(spent)}</div></div>
+        <div class="tile"><div class="k">${inDeficit ? "Over budget" : "Left for today"}</div><div class="v ${inDeficit ? "neg" : "pos"}">${money(remaining)}</div></div>
+      </div>
+
+      ${inDeficit ? `<div class="deficit-banner">${svg("alert")}<div><b>Over budget by ${money(-remaining)}</b><span>${fromInv ? "Drawn from your pools &amp; investment" : "Drawn from your pools, shortest-horizon first"}</span></div></div>` : ""}
+
+      <div class="pad" style="margin-top:16px">
+        <button class="btn accent" data-action="open-expense">${svg("plus")} Log an expense</button>
+      </div>
+
+      ${noPools ? `<div class="empty"><div class="emoji">🌱</div><p>Your daily allowance grows from income pools.<br>Tap the <b>+</b> below to add your first income.</p></div>` : exp}
+    `;
+  }
+
+  // ---------- POOLS
+  function renderPools() {
+    const ref = todayDate();
+    let list;
+    if (!state.pools.length) {
+      list = `<div class="empty"><div class="emoji">💧</div><p>No active pools.<br>Add income to create one.</p></div>`;
+    } else {
+      const sorted = state.pools.slice().sort((a, b) => parseISO(a.endDate) - parseISO(b.endDate));
+      list = sorted.map(p => {
+        const c = contribution(p, ref);
+        const pctLeft = p.initial > 0 ? Math.max(0, Math.min(100, (p.balance / p.initial) * 100)) : 0;
+        const cl = convLine(p.balance, p.cur);
+        return `
+        <div class="pool">
+          <button class="del" data-action="del-pool" data-id="${p.id}">${svg("trash")}</button>
+          <div class="row1"><div class="name">${esc(p.name)}</div><div class="bal">${fmtAmt(p.balance, p.cur)}</div></div>
+          ${cl ? `<div class="bal-conv">${cl}</div>` : ""}
+          <div class="meta">
+            <div class="contrib">${fmtAmt(c, p.cur)} <small>/ day</small></div>
+            <div class="when"><b>${daysRemaining(p, ref) <= 1 ? "Last day" : daysRemaining(p, ref) + " days left"}</b>ends ${fmtMonthYear(parseISO(p.endDate))}</div>
+          </div>
+          <div class="bar"><i style="width:${pctLeft}%"></i></div>
+        </div>`;
+      }).join("");
+    }
+
+    screen.innerHTML = `
+      ${topbar(state.pools.length + " active · " + money(totalSpendable()) + " spendable", "Pools", false)}
+      <div class="pad fade-in">
+        <div class="card" style="background:linear-gradient(135deg,#ecfdf5,#f0fdf4);box-shadow:none;border:1px solid #d1fae5;margin-top:10px">
+          <div style="font-size:13px;font-weight:700;color:var(--accent-2)">COMBINED DAILY ALLOWANCE</div>
+          <div style="font-size:30px;font-weight:800;letter-spacing:-.8px;color:var(--accent-2);margin-top:2px">${money(state.todayAllowance || totalAllowance(ref))}</div>
+        </div>
+        <div class="section-title">Active pools</div>
+        ${list}
+      </div>
+    `;
+  }
+
+  // ---------- ADD INCOME
+  function renderAdd() {
+    screen.innerHTML = `
+      ${topbar("New income", "Add a pool", false)}
+      <div class="pad fade-in">
+        <div class="field">
+          <label>Amount</label>
+          <div class="amount-wrap"><span class="sym" id="in-sym">${curSym(state.lastCurrency)}</span><input class="input" id="in-amt" type="text" inputmode="decimal" placeholder="0.00" /></div>
+        </div>
+        <div class="field">
+          <label>Currency</label>
+          ${currencySelect("in-cur", state.lastCurrency)}
+        </div>
+        <div class="field">
+          <label>Name</label>
+          <input class="input" id="in-name" type="text" placeholder="e.g. June Salary" maxlength="40" />
+        </div>
+        <div class="field">
+          <label>Stretch over</label>
+          <div class="seg" style="margin-bottom:12px">
+            <button data-action="addmode" data-mode="duration" class="${addMode === "duration" ? "on" : ""}">Duration</button>
+            <button data-action="addmode" data-mode="date" class="${addMode === "date" ? "on" : ""}">End date</button>
+          </div>
+          ${addMode === "duration" ? `
+            <div class="dur-row">
+              <input class="input num" id="in-dur" type="number" inputmode="numeric" value="12" min="1" />
+              <select class="input" id="in-unit">
+                <option value="days">days</option>
+                <option value="months" selected>months</option>
+                <option value="years">years</option>
+              </select>
+            </div>` : `
+            <input class="input" id="in-date" type="date" value="${fmtISO(addMonths(todayDate(), 12))}" min="${state.currentDate}" />`}
+        </div>
+        <div class="field">
+          <label class="check-row"><span>🔒 Invest on arrival</span><input type="checkbox" id="in-invest" ${investOn ? "checked" : ""} /></label>
+          <div id="in-invest-wrap" style="display:${investOn ? "block" : "none"};margin-top:10px">
+            <input type="range" id="in-pct" class="inv-range" min="0" max="100" value="${investPct}" oninput="document.getElementById('in-pct-val').textContent=this.value+'%'" />
+            <div style="text-align:center;font-weight:800;color:var(--invest-2);font-size:18px;margin-top:6px" id="in-pct-val">${investPct}%</div>
+            <div style="font-size:12.5px;color:var(--muted);text-align:center">sent straight to your investment pool</div>
+          </div>
+        </div>
+        <div class="preview" id="add-preview">Enter an amount to see the daily contribution.</div>
+        <button class="btn accent" data-action="create-pool" style="margin-top:18px">${svg("plus")} Create pool</button>
+      </div>
+    `;
+    bindAddPreview();
+  }
+
+  function readAddEndDate() {
+    if (addMode === "date") {
+      const v = document.getElementById("in-date").value;
+      return v ? parseISO(v) : null;
+    }
+    const n = Math.max(1, parseInt(document.getElementById("in-dur").value || "0", 10) || 0);
+    const unit = document.getElementById("in-unit").value;
+    const base = todayDate();
+    if (unit === "days") return addDays(base, n - 1);   // n days inclusive of today
+    if (unit === "months") return addMonths(base, n);
+    return addYears(base, n);
+  }
+
+  function bindAddPreview() {
+    const upd = () => {
+      const cur = val("in-cur") || dispCur();
+      const symEl = document.getElementById("in-sym");
+      if (symEl) symEl.textContent = curSym(cur);
+      const amt = parseFloat(document.getElementById("in-amt").value);
+      const end = readAddEndDate();
+      const pv = document.getElementById("add-preview");
+      if (!pv) return;
+      const cb = document.getElementById("in-invest");
+      const on = cb && cb.checked;
+      const ps = document.getElementById("in-pct");
+      const pct = on ? Math.max(0, Math.min(100, ps ? (parseFloat(ps.value) || 0) : 0)) : 0;
+      if (on && ps) investPct = pct;
+      if (!amt || amt <= 0 || !end) { pv.innerHTML = "Enter an amount to see the daily contribution."; return; }
+      const investAmt = amt * (pct / 100);
+      const poolAmt = amt - investAmt;
+      const dr = Math.max(1, daysBetween(todayDate(), end) + 1);
+      const perDay = poolAmt / dr;
+      const cl = convLine(perDay, cur);
+      const head = (on && investAmt > 1e-9)
+        ? `<b>${fmtAmt(investAmt, cur)}</b> → investment 🔒 · <b>${fmtAmt(poolAmt, cur)}</b> becomes the pool.<br>`
+        : "";
+      pv.innerHTML = head + `Ends <b>${fmtFull(end)}</b> · ${dr} days<br>Starts at <b>${fmtAmt(perDay, cur)} / day</b>${cl ? " (" + cl + ")" : ""} — rising as you underspend.`;
+    };
+    const cb = document.getElementById("in-invest");
+    if (cb) cb.addEventListener("change", () => {
+      investOn = cb.checked;
+      const w = document.getElementById("in-invest-wrap");
+      if (w) w.style.display = cb.checked ? "block" : "none";
+      upd();
+    });
+    ["in-amt", "in-dur", "in-unit", "in-date", "in-cur", "in-pct"].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) { el.addEventListener("input", upd); el.addEventListener("change", upd); }
+    });
+    upd();
+  }
+
+  // ---------- INVESTMENT
+  function renderInvestment() {
+    const inv = state.investment;
+    const [bi, bc] = partsFor(inv.balance, inv.cur);
+    const heroConv = convLine(inv.balance, inv.cur);
+    let ledger;
+    if (!inv.surpluses.length) {
+      ledger = `<div class="empty" style="padding:30px 10px"><div class="emoji">🔒</div><p>No surpluses yet.<br>When a pool reaches its end date, leftover money flows here automatically.</p></div>`;
+    } else {
+      ledger = `<div class="card" style="padding:4px 16px">` + inv.surpluses.map(s => {
+        const sc = s.cur || inv.cur;
+        const cl = convLine(s.amount, sc);
+        return `
+        <div class="ledger">
+          <div><div class="lf">From ${esc(s.from)}</div><div class="ld">${fmtFull(parseISO(s.date))}${cl ? " · " + cl : ""}</div></div>
+          <div class="la">+${fmtAmt(s.amount, sc).replace(/^-/, "")}</div>
+        </div>`;
+      }).join("") + `</div>`;
+    }
+
+    screen.innerHTML = `
+      ${topbar("Long-term capital", "Investment", false)}
+      <div class="invest-hero fade-in">
+        <div class="lockrow">${svg("lock")} INVESTMENT POOL · ${inv.cur}</div>
+        <div class="big">${bi}<span class="cents">${bc}</span></div>
+        ${heroConv ? `<div class="sub" style="opacity:.95">${heroConv}</div>` : ""}
+        <div class="sub">Locked away on a 100-year horizon. Does not fund daily spending — surpluses compound here until you liquidate.</div>
+      </div>
+      <div class="pad" style="margin-top:16px">
+        <button class="btn invest" data-action="open-liquidate">${svg("unlock")} Liquidate to spendable</button>
+        <div class="section-title">Surplus history</div>
+        ${ledger}
+      </div>
+    `;
+  }
+
+  // ---------- HISTORY
+  function renderHistory() {
+    let list;
+    if (!state.history.length) {
+      list = `<div class="empty"><div class="emoji">📅</div><p>No past days yet.<br>Each day is recorded here after midnight.</p></div>`;
+    } else {
+      const d = dispCur();
+      list = state.history.map(h => {
+        const hc = h.cur || d;
+        const spent = convert(h.spent, hc, d);
+        const allowance = convert(h.allowance, hc, d);
+        const saved = convert(h.saved || 0, hc, d);
+        const pct = allowance > 0 ? Math.min(100, (spent / allowance) * 100) : 0;
+        const over = spent > allowance + 1e-6;
+        const col = over ? "var(--danger)" : "linear-gradient(90deg,#34d399,#10b981)";
+        return `
+        <div class="hday">
+          <div class="top"><div class="date">${fmtDayMonth(parseISO(h.date))}</div><div class="spent">${money(spent)}</div></div>
+          <div class="sub">${money(allowance)} allowance · ${over ? "over by " + money(spent - allowance) : money(allowance - spent) + " under"}${saved > 1e-9 ? " · " + money(saved) + " → goals" : ""}</div>
+          <div class="bar"><i style="width:${pct}%;background:${col}"></i></div>
+        </div>`;
+      }).join("");
+    }
+    const dd = dispCur();
+    const totalSpent = state.history.reduce((s, h) => s + convert(h.spent, h.cur || dd, dd), 0);
+    screen.innerHTML = `
+      ${topbar(state.history.length + " days recorded", "History", false)}
+      <div class="pad fade-in">
+        ${state.history.length ? `<div class="card" style="margin-top:10px"><div style="font-size:13px;font-weight:700;color:var(--muted)">TOTAL SPENT (all time)</div><div style="font-size:28px;font-weight:800;letter-spacing:-.7px;margin-top:2px">${money(totalSpent)}</div></div><div class="section-title">Daily log</div>` : ""}
+        ${list}
+      </div>
+    `;
+  }
+
+  // ---------- GOALS
+  function renderGoals() {
+    const goals = state.goals;
+    const d = dispCur();
+    const estLeft = estDailyLeftover();
+    const totalSaved = goals.reduce((s, g) => s + convert(g.balance, g.cur, d), 0);
+    const fills = estimatedFills();   // per-id deposits in display currency
+    const rints = goals.length ? pctRound(goals.map(g => g.ratio || 0)) : [];
+    const single = goals.length <= 1;
+
+    const head = `
+      <div class="card split-card" style="margin-top:10px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+          <div>
+            <div style="font-size:13px;font-weight:700;color:var(--goal-2)">LEFTOVER SPLIT</div>
+            <div style="font-size:27px;font-weight:800;letter-spacing:-.6px;color:var(--goal-2);margin-top:2px">${state.goalSplit}%<span style="font-size:14px;color:var(--muted);font-weight:700"> → goals</span></div>
+            <div style="font-size:12.5px;color:var(--muted);margin-top:3px">${100 - state.goalSplit}% repooled · ~${money(estLeft)} avg daily leftover</div>
+          </div>
+          <button class="icon-btn" data-action="edit-split">${svg("sliders")}</button>
+        </div>
+      </div>`;
+
+    let list;
+    if (!goals.length) {
+      list = `<div class="empty"><div class="emoji">🎯</div><p>No savings goals yet.<br>Create one and your daily leftovers start filling it automatically.</p></div>`;
+    } else {
+      list = goals.map((g, idx) => {
+        const full = g.balance >= g.target - 1e-9;
+        const pct = g.target > 0 ? Math.min(100, (g.balance / g.target) * 100) : 100;
+        const ri = rints[idx];
+        const badge = full ? `<span class="badge ready">Ready to spend</span>` : "";
+        const fillLine = full
+          ? `<div class="rate" style="color:var(--accent-2)">🎉 Target reached</div>`
+          : `<div class="rate fill-est" data-id="${g.id}">~${fmtAmt(convert(fills[g.id] || 0, d, g.cur), g.cur)} <small>/ day</small></div>`;
+        const cl = convLine(g.balance, g.cur);
+        const ratioRow = `
+          <div class="ratio-row">
+            <input type="range" class="ratio-slider" data-id="${g.id}" min="0" max="100" value="${g.ratio || 0}" ${(full || single) ? "disabled" : ""} />
+            <span class="ratio-val" data-id="${g.id}">${ri}%</span>
+          </div>`;
+        const acts = full
+          ? `<div class="acts"><button class="btn accent" data-action="spend-goal" data-id="${g.id}">${svg("check")} Spend &amp; complete</button><button class="linkbtn danger" data-action="cancel-goal" data-id="${g.id}">Cancel</button></div>`
+          : `<div class="acts"><button class="linkbtn danger" data-action="cancel-goal" data-id="${g.id}">Cancel goal</button></div>`;
+        return `
+        <div class="goal ${full ? "full" : ""}">
+          <div class="row1"><div class="name">${esc(g.name)}</div><div class="nums"><b>${fmtAmt(g.balance, g.cur)}</b> / ${fmtAmt(g.target, g.cur)}</div></div>
+          ${cl ? `<div class="bal-conv">${cl}</div>` : ""}
+          <div class="bar"><i style="width:${pct}%"></i></div>
+          ${ratioRow}
+          <div class="status">${fillLine}${badge}</div>
+          ${acts}
+        </div>`;
+      }).join("");
+    }
+
+    const hint = goals.length > 1
+      ? `<div style="font-size:12.5px;color:var(--muted);margin:0 4px 4px;text-align:center">Drag a share slider — the others rebalance to keep the total at 100%.</div>`
+      : "";
+
+    screen.innerHTML = `
+      ${topbar(goals.length + " goals · " + money(totalSaved) + " saved", "Goals", false)}
+      <div class="pad fade-in">
+        ${head}
+        <button class="btn goal" data-action="open-goal" style="margin-top:14px">${svg("plus")} New goal</button>
+        <div class="section-title">Your goals · funding shares</div>
+        ${hint}
+        ${list}
+      </div>
+    `;
+    bindRatioSliders();
+  }
+
+  // Live, no-commit rebalance while dragging a goal's ratio slider: the other goals'
+  // displayed shares + estimated fills update so the user always sees a total of 100%.
+  function liveRebalance(changedId, newVal) {
+    newVal = Math.max(0, Math.min(100, parseFloat(newVal) || 0));
+    const others = state.goals.filter(g => g.id !== changedId);
+    const sOther = others.reduce((a, g) => a + (g.ratio || 0), 0);
+    const prov = {};
+    state.goals.forEach(g => {
+      if (g.id === changedId) prov[g.id] = newVal;
+      else prov[g.id] = sOther <= 1e-9 ? (100 - newVal) / Math.max(1, others.length) : (g.ratio || 0) * (100 - newVal) / sOther;
+    });
+    const rints = pctRound(state.goals.map(g => prov[g.id]));
+    state.goals.forEach((g, idx) => {
+      const valEl = document.querySelector('.ratio-val[data-id="' + g.id + '"]');
+      if (valEl) valEl.textContent = rints[idx] + "%";
+      if (g.id !== changedId) { const sl = document.querySelector('.ratio-slider[data-id="' + g.id + '"]'); if (sl) sl.value = prov[g.id]; }
+    });
+    const d = dispCur();
+    const provGoals = state.goals.map(g => ({ id: g.id, balance: g.balance, target: g.target, ratio: prov[g.id], cur: g.cur }));
+    const pot = estDailyLeftover() * (state.goalSplit / 100);
+    const dep = pot > 1e-9 ? distributeToGoals(pot, provGoals).dep : {};
+    state.goals.forEach(g => { const fe = document.querySelector('.fill-est[data-id="' + g.id + '"]'); if (fe) fe.innerHTML = "~" + fmtAmt(convert(dep[g.id] || 0, d, g.cur), g.cur) + " <small>/ day</small>"; });
+  }
+
+  function bindRatioSliders() {
+    document.querySelectorAll(".ratio-slider").forEach(sl => {
+      if (sl.disabled) return;
+      const id = sl.dataset.id;
+      sl.addEventListener("input", () => liveRebalance(id, sl.value));
+      sl.addEventListener("change", () => { setGoalRatio(id, parseFloat(sl.value) || 0); render(); });
+    });
+  }
+
+  // ============================================================ MODALS
+  const modalRoot = document.getElementById("modal-root");
+  const sheet = document.getElementById("sheet");
+  function openSheet(html) { sheet.innerHTML = `<div class="grab"></div>` + html; modalRoot.classList.add("open"); }
+  function closeSheet() { modalRoot.classList.remove("open"); }
+
+  function openExpense() {
+    openSheet(`
+      <h2>Log an expense</h2>
+      <div class="field">
+        <div class="amount-wrap"><span class="sym" id="exp-sym">${curSym(state.lastCurrency)}</span><input class="input" id="exp-amt" type="text" inputmode="decimal" placeholder="0.00" autofocus /></div>
+      </div>
+      <div class="field"><label>Currency</label>${currencySelect("exp-cur", state.lastCurrency)}</div>
+      <div class="field"><input class="input" id="exp-note" type="text" placeholder="What was it? (optional)" maxlength="40" /></div>
+      <button class="btn accent" data-action="save-expense">Add expense</button>
+    `);
+    bindCurSym("exp-cur", "exp-sym");
+    setTimeout(() => { const el = document.getElementById("exp-amt"); if (el) el.focus(); }, 250);
+  }
+
+  function openLiquidate() {
+    liqMode = "duration";
+    renderLiquidateSheet();
+    modalRoot.classList.add("open");
+  }
+  function renderLiquidateSheet() {
+    const inv = state.investment;
+    sheet.innerHTML = `<div class="grab"></div>
+      <h2>Liquidate investment</h2>
+      <div class="field">
+        <label>Amount · available ${fmtAmt(inv.balance, inv.cur)}</label>
+        <div class="amount-wrap"><span class="sym">${curSym(inv.cur)}</span><input class="input" id="liq-amt" type="text" inputmode="decimal" placeholder="0.00" /></div>
+      </div>
+      <div class="field"><label>New pool currency</label>${currencySelect("liq-cur", state.lastCurrency)}</div>
+      <div class="field"><label>Name</label><input class="input" id="liq-name" type="text" placeholder="e.g. Vacation fund" maxlength="40" /></div>
+      <div class="field">
+        <label>Stretch over</label>
+        <div class="seg" style="margin-bottom:12px">
+          <button data-action="liqmode" data-mode="duration" class="${liqMode === "duration" ? "on" : ""}">Duration</button>
+          <button data-action="liqmode" data-mode="date" class="${liqMode === "date" ? "on" : ""}">End date</button>
+        </div>
+        ${liqMode === "duration" ? `
+          <div class="dur-row">
+            <input class="input num" id="liq-dur" type="number" inputmode="numeric" value="3" min="1" />
+            <select class="input" id="liq-unit"><option value="days">days</option><option value="months" selected>months</option><option value="years">years</option></select>
+          </div>` : `
+          <input class="input" id="liq-date" type="date" value="${fmtISO(addMonths(todayDate(), 3))}" min="${state.currentDate}" />`}
+      </div>
+      <div class="preview invest" id="liq-preview">This creates a new spendable pool.</div>
+      <button class="btn invest" data-action="do-liquidate" style="margin-top:16px">${svg("unlock")} Create pool</button>
+    `;
+    bindLiqPreview();
+  }
+  function readLiqEndDate() {
+    if (liqMode === "date") { const v = document.getElementById("liq-date").value; return v ? parseISO(v) : null; }
+    const n = Math.max(1, parseInt(document.getElementById("liq-dur").value || "0", 10) || 0);
+    const unit = document.getElementById("liq-unit").value;
+    const base = todayDate();
+    if (unit === "days") return addDays(base, n - 1);
+    if (unit === "months") return addMonths(base, n);
+    return addYears(base, n);
+  }
+  function bindLiqPreview() {
+    const inv = state.investment;
+    const upd = () => {
+      const amt = parseFloat(document.getElementById("liq-amt").value);
+      const poolCur = val("liq-cur") || inv.cur;
+      const end = readLiqEndDate();
+      const pv = document.getElementById("liq-preview");
+      if (!pv) return;
+      if (!amt || amt <= 0 || !end) { pv.innerHTML = "This creates a new spendable pool."; return; }
+      const capped = Math.min(amt, inv.balance);
+      const poolAmt = convert(capped, inv.cur, poolCur);
+      const dr = Math.max(1, daysBetween(todayDate(), end) + 1);
+      pv.innerHTML = `Moves <b>${fmtAmt(capped, inv.cur)}</b> into a new <b>${poolCur}</b> pool of <b>${fmtAmt(poolAmt, poolCur)}</b> ending <b>${fmtFull(end)}</b>, adding ~<b>${fmtAmt(poolAmt / dr, poolCur)} / day</b>.`;
+    };
+    ["liq-amt", "liq-dur", "liq-unit", "liq-date", "liq-cur"].forEach(id => { const el = document.getElementById(id); if (el) { el.addEventListener("input", upd); el.addEventListener("change", upd); } });
+    upd();
+  }
+
+  function openSettings() {
+    const age = ratesAgeDays();
+    const rateInfo = !state.rates
+      ? "Not loaded yet"
+      : (age >= 1 ? `Updated ${age} day${age > 1 ? "s" : ""} ago (${state.rates.date})` : `Up to date (${state.rates.date})`);
+    openSheet(`
+      <h2>Settings</h2>
+      <div class="field">
+        <label>Display currency</label>
+        ${currencySelect("set-cur", state.displayCurrency)}
+        <div style="font-size:12.5px;color:var(--muted);margin-top:8px">Amounts show in their native currency with this as the secondary equivalent.</div>
+      </div>
+      <button class="btn accent" data-action="save-settings">Save display currency</button>
+
+      <div class="section-title" style="margin-top:22px">Exchange rates</div>
+      <div class="card" style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+        <div><div style="font-size:14px;font-weight:700">Daily rates</div><div style="font-size:12.5px;color:var(--muted);margin-top:2px">${rateInfo}</div></div>
+        <button class="btn ghost" data-action="refresh-rates" style="width:auto;padding:11px 16px">Refresh</button>
+      </div>
+      <div style="font-size:12px;color:var(--muted);margin:8px 4px 0;text-align:center">Rates by <a href="https://www.exchangerate-api.com" target="_blank" rel="noopener noreferrer" style="color:var(--accent-2);font-weight:700">ExchangeRate-API</a></div>
+
+      <div class="section-title" style="margin-top:24px;color:var(--danger)">Danger zone</div>
+      <button class="btn danger" data-action="reset-data">${svg("trash")} Reset all data</button>
+    `);
+  }
+
+  function splitSlider(id, value) {
+    return `<input type="range" id="${id}" min="0" max="100" value="${value}" oninput="document.getElementById('${id}-val').textContent=this.value+'%'" />
+      <div style="text-align:center;font-weight:800;color:var(--goal-2);font-size:18px;margin-top:6px" id="${id}-val">${value}%</div>`;
+  }
+  // Keep an amount field's currency symbol in sync with its currency selector.
+  function bindCurSym(curId, symId, extra) {
+    const sel = document.getElementById(curId), symEl = document.getElementById(symId);
+    if (!sel) return;
+    const upd = () => { if (symEl) symEl.textContent = curSym(sel.value); if (extra) extra(); };
+    sel.addEventListener("change", upd); upd();
+  }
+
+  function openGoal() { goalOverrideOn = false; renderGoalSheet(); modalRoot.classList.add("open"); }
+  function renderGoalSheet() {
+    const n = state.goals.length + 1;
+    const eq = Math.round(100 / n);
+    const first = state.goals.length === 0;
+    sheet.innerHTML = `<div class="grab"></div>
+      <h2>New savings goal</h2>
+      <div class="field"><label>Name</label><input class="input" id="g-name" type="text" placeholder="e.g. New laptop" maxlength="40" /></div>
+      <div class="field"><label>Target amount</label>
+        <div class="amount-wrap"><span class="sym" id="g-sym">${curSym(state.lastCurrency)}</span><input class="input" id="g-target" type="text" inputmode="decimal" placeholder="0.00" /></div>
+      </div>
+      <div class="field"><label>Currency</label>${currencySelect("g-cur", state.lastCurrency)}</div>
+      ${first ? "" : `
+      <div class="field">
+        <label class="check-row"><span>Set a custom funding share</span><input type="checkbox" id="g-ovr" ${goalOverrideOn ? "checked" : ""} /></label>
+        <div id="g-ovr-wrap" style="display:${goalOverrideOn ? "block" : "none"};margin-top:10px">${splitSlider("g-split", eq)}</div>
+      </div>`}
+      <div class="preview" style="background:var(--goal-soft);color:var(--goal-2)">${first
+        ? "Your first goal receives 100% of the goal-bound leftover."
+        : "Leave off to split equally — each goal gets ~" + eq + "%. The others rebalance automatically so all shares total 100%."}</div>
+      <button class="btn goal" data-action="create-goal" style="margin-top:16px">${svg("plus")} Create goal</button>`;
+    const cb = document.getElementById("g-ovr");
+    if (cb) cb.addEventListener("change", () => { goalOverrideOn = cb.checked; document.getElementById("g-ovr-wrap").style.display = cb.checked ? "block" : "none"; });
+    bindCurSym("g-cur", "g-sym");
+    setTimeout(() => { const el = document.getElementById("g-name"); if (el) el.focus(); }, 250);
+  }
+
+  function openSplitEdit() {
+    openSheet(`
+      <h2>Leftover split</h2>
+      <div class="field">
+        <label>How much of each day's unspent allowance goes to goals?</label>
+        ${splitSlider("gs-range", state.goalSplit)}
+        <div style="text-align:center;font-size:12.5px;color:var(--muted);margin-top:4px">the rest is repooled into your income pools</div>
+      </div>
+      <button class="btn goal" data-action="save-split">Save</button>`);
+  }
+
+  // ============================================================ EVENTS
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+  function num(id) { const el = document.getElementById(id); return el ? parseFloat(el.value) : NaN; }
+  function val(id) { const el = document.getElementById(id); return el ? el.value.trim() : ""; }
+
+  document.addEventListener("click", e => {
+    const el = e.target.closest("[data-action]");
+    if (!el) return;
+    const a = el.dataset.action;
+
+    if (a === "nav") { tab = el.dataset.tab; if (tab === "add") { investOn = false; investPct = 10; } render(); return; }
+    if (a === "close-modal") { closeSheet(); return; }
+    if (a === "settings") { openSettings(); return; }
+
+    if (a === "open-expense") { openExpense(); return; }
+    if (a === "save-expense") {
+      const amt = num("exp-amt");
+      if (!(amt > 0)) { shake("exp-amt"); return; }
+      addExpense(amt, val("exp-note"), val("exp-cur")); closeSheet(); render(); return;
+    }
+    if (a === "del-expense") { removeExpense(el.dataset.id); render(); return; }
+
+    if (a === "addmode") { addMode = el.dataset.mode; renderAdd(); return; }
+    if (a === "create-pool") {
+      const amt = num("in-amt"); const name = val("in-name"); const end = readAddEndDate(); const cur = val("in-cur") || dispCur();
+      if (!(amt > 0)) { shake("in-amt"); return; }
+      if (!end || end < todayDate()) { return; }
+      const cb = document.getElementById("in-invest");
+      let pct = 0;
+      if (cb && cb.checked) { const s = document.getElementById("in-pct"); pct = Math.max(0, Math.min(100, s ? (parseFloat(s.value) || 0) : 0)); }
+      const investAmt = amt * (pct / 100);
+      const poolAmt = amt - investAmt;
+      if (investAmt > 1e-9) contributeToInvestment(investAmt, cur, name || "Income");   // straight to investment
+      if (poolAmt > 1e-9) createPool(name || "Income", poolAmt, end, cur);              // remainder becomes the pool
+      else { state.lastCurrency = cur; reconcileDay(); }                                 // 100% invested: no pool
+      save();
+      investOn = false; investPct = 10;   // per-pool decision: reset for next time
+      tab = poolAmt > 1e-9 ? "pools" : "investment"; render(); return;
+    }
+
+    if (a === "open-liquidate") { openLiquidate(); return; }
+    if (a === "liqmode") { liqMode = el.dataset.mode; renderLiquidateSheet(); return; }
+    if (a === "do-liquidate") {
+      const amt = num("liq-amt"); const end = readLiqEndDate();
+      if (!(amt > 0)) { shake("liq-amt"); return; }
+      if (!end || end < todayDate()) return;
+      if (state.investment.balance <= 0) { closeSheet(); return; }
+      liquidate(amt, val("liq-name"), end, val("liq-cur")); closeSheet(); tab = "pools"; render(); return;
+    }
+
+    if (a === "del-pool") {
+      const p = state.pools.find(x => x.id === el.dataset.id);
+      if (!p) return;
+      const cl = convLine(p.balance, p.cur);
+      if (confirm(`Delete “${p.name}”?\n\nThis permanently removes ${fmtAmt(p.balance, p.cur)}${cl ? " (" + cl + ")" : ""} from your budget. The money is NOT redistributed and this cannot be undone.`)) {
+        deletePool(el.dataset.id); render();
+      }
+      return;
+    }
+
+    if (a === "save-settings") {
+      const c = val("set-cur"); if (c) state.displayCurrency = c; reconcileDay(); save(); closeSheet(); render(); return;
+    }
+    if (a === "refresh-rates") {
+      refreshRates(true).then(() => { if (modalRoot.classList.contains("open")) openSettings(); });
+      return;
+    }
+    if (a === "reset-data") {
+      if (confirm("Erase ALL pools, goals, history and investment capital? This cannot be undone.")) {
+        localStorage.removeItem(KEY); state = null; closeSheet(); boot();
+      }
+      return;
+    }
+
+    // goals
+    if (a === "open-goal") { openGoal(); return; }
+    if (a === "create-goal") {
+      const name = val("g-name"); const target = num("g-target");
+      if (!(target > 0)) { shake("g-target"); return; }
+      let ratio = null;
+      const ovr = document.getElementById("g-ovr");
+      if (ovr && ovr.checked) { const s = document.getElementById("g-split"); ratio = s ? parseFloat(s.value) : null; }
+      createGoal(name, target, ratio, val("g-cur")); closeSheet(); tab = "goals"; render(); return;
+    }
+    if (a === "cancel-goal") {
+      if (confirm("Cancel this goal? Its balance moves to your oldest remaining goal, or to the investment pool if there are none.")) {
+        cancelGoal(el.dataset.id); closeSheet(); render();
+      }
+      return;
+    }
+    if (a === "spend-goal") {
+      if (confirm("Spend this goal? The saved money is used and the goal is removed.")) {
+        spendGoal(el.dataset.id); closeSheet(); render();
+      }
+      return;
+    }
+    if (a === "edit-split") { openSplitEdit(); return; }
+    if (a === "save-split") {
+      const r = document.getElementById("gs-range");
+      if (r) setGoalSplit(parseInt(r.value, 10) || 0);
+      closeSheet(); render(); return;
+    }
+
+    // setup
+    if (a === "cur-pick") {
+      document.querySelectorAll("#cur-chips .chip").forEach(c => c.classList.remove("on"));
+      el.classList.add("on");
+      pickedCur = el.dataset.code;
+      const sel = document.getElementById("cur-select"); if (sel) sel.value = pickedCur;
+      return;
+    }
+    if (a === "finish-setup") {
+      const cur = pickedCur || "USD";
+      initState(cur); render();
+      document.getElementById("setup").classList.remove("show");
+      refreshRates(false);
+      return;
+    }
+  });
+
+  function shake(id) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.style.borderColor = "var(--danger)";
+    el.animate([{ transform: "translateX(0)" }, { transform: "translateX(-6px)" }, { transform: "translateX(6px)" }, { transform: "translateX(0)" }], { duration: 240 });
+  }
+
+  // ============================================================ SETUP
+  let pickedCur = "USD";
+  function renderSetupChips() {
+    const popular = ["USD", "EUR", "GBP", "JPY", "BRL", "ARS"];
+    pickedCur = "USD";
+    document.getElementById("cur-chips").innerHTML = popular.map((c, i) =>
+      `<button class="chip ${i === 0 ? "on" : ""}" data-action="cur-pick" data-code="${c}">${CURRENCIES[c].sym} ${c}</button>`).join("");
+    const sel = document.getElementById("cur-select");
+    if (sel) {
+      sel.innerHTML = curOptions("USD");
+      sel.addEventListener("change", () => {
+        pickedCur = sel.value;
+        document.querySelectorAll("#cur-chips .chip").forEach(c => c.classList.toggle("on", c.dataset.code === pickedCur));
+      });
+    }
+  }
+
+  function initState(displayCode) {
+    const today = todayDate();
+    state = {
+      v: 2,
+      displayCurrency: displayCode,
+      lastCurrency: displayCode,
+      rates: null,
+      initDate: fmtISO(today),
+      currentDate: fmtISO(today),
+      seq: 0,
+      pools: [],
+      investment: { id: "investment", name: "Investment", balance: 0, endDate: fmtISO(addYears(today, 100)), createdDate: fmtISO(today), cur: displayCode, surpluses: [] },
+      goals: [],
+      goalSplit: 50,
+      todayExpenses: [],
+      todayAllowance: 0,
+      spendDebits: [],
+      history: []
+    };
+    save();
+  }
+
+  // Bring older saved state up to the current schema (per-entity currency codes + rates).
+  function migrate() {
+    if (!state) return;
+    if (!state.displayCurrency) {
+      state.displayCurrency = (state.currency && SYMBOL_TO_CODE[state.currency]) || "USD";
+      delete state.currency;
+    }
+    if (!state.lastCurrency) state.lastCurrency = state.displayCurrency;
+    if (!("rates" in state)) state.rates = null;
+    const dc = state.displayCurrency;
+    if (!Array.isArray(state.pools)) state.pools = [];
+    state.pools.forEach(p => { if (!p.cur) p.cur = dc; });
+    if (!Array.isArray(state.goals)) state.goals = [];
+    state.goals.forEach(g => { if (!g.cur) g.cur = dc; });
+    if (state.investment && !state.investment.cur) state.investment.cur = dc;
+    if (state.investment && Array.isArray(state.investment.surpluses)) state.investment.surpluses.forEach(s => { if (!s.cur) s.cur = dc; });
+    if (!Array.isArray(state.todayExpenses)) state.todayExpenses = [];
+    state.todayExpenses.forEach(e => { if (!e.cur) e.cur = dc; });
+    if (Array.isArray(state.history)) state.history.forEach(h => { if (!h.cur) h.cur = dc; });
+    if (typeof state.todaySpent === "number") delete state.todaySpent;
+    if (Array.isArray(state.deficitDebits) && !Array.isArray(state.spendDebits)) state.spendDebits = state.deficitDebits;
+    if ("deficitDebits" in state) delete state.deficitDebits;
+    if (!Array.isArray(state.spendDebits)) state.spendDebits = [];
+    if (typeof state.todayAllowance !== "number") state.todayAllowance = 0;
+    // goal ratios (from the priority rework)
+    if (state.goals.length) {
+      if (state.goals.some(g => typeof g.ratio !== "number")) {
+        const e = 100 / state.goals.length;
+        state.goals.forEach(g => g.ratio = e);
+      } else {
+        distributeRatioAmong(state.goals, 100);
+      }
+      state.goals.forEach(g => { delete g.splitOverride; });
+    }
+    if (typeof state.goalSplit !== "number") state.goalSplit = 50;
+    if (typeof state.seq !== "number") state.seq = 0;
+  }
+
+  // ============================================================ BOOT
+  function boot() {
+    if (!state || !state.investment) {
+      document.getElementById("setup").classList.add("show");
+      renderSetupChips();
+      return;
+    }
+    migrate();
+    rollIfNeeded();
+    save();
+    render();
+    refreshRates(false);   // fetch/refresh exchange rates on open (async; re-renders on success)
+  }
+
+  // process missed midnights while the app stays open / regains focus
+  function tick() {
+    if (!state) return;
+    const before = state.currentDate;
+    rollIfNeeded();
+    if (state.currentDate !== before) { save(); render(); }
+  }
+  setInterval(tick, 30000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
+  window.addEventListener("focus", tick);
+
+  boot();
+
+  // ---- PWA: register the offline service worker (no-op if unsupported / file://) ----
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => { navigator.serviceWorker.register("sw.js").catch(function () {}); });
+  }
+})();
+</script>
+</body>
+</html>
