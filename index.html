@@ -179,6 +179,9 @@
   .pool .when b { display: block; color: var(--text); font-weight: 700; font-size: 13px; }
   .pool .bar { height: 6px; border-radius: 99px; background: var(--bg-2); margin-top: 12px; overflow: hidden; }
   .pool .bar > i { display: block; height: 100%; background: linear-gradient(90deg,#34d399,#10b981); border-radius: 99px; }
+  .poolinv { margin-top: 12px; font-size: 12px; font-weight: 700; padding: 7px 11px; border-radius: 10px; background: var(--bg-2); color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+  .poolinv.on { background: var(--invest-soft); color: var(--invest-2); }
+  .poolinv:active { transform: scale(.96); }
   .pool .del {
     position: absolute; top: 12px; right: 12px;
     width: 30px; height: 30px; border-radius: 9px;
@@ -589,7 +592,15 @@
       let target = null;
       for (const s of survivors) if (!target || parseISO(s.endDate) > parseISO(target.endDate)) target = s;
       if (target) {
-        target.balance += convert(p.balance, p.cur, target.cur);   // convert at the transfer
+        const incoming = convert(p.balance, p.cur, target.cur);   // convert at the transfer
+        const pct = target.investPct || 0;
+        if (pct > 0) {
+          const toInv = incoming * (pct / 100);                   // receiving pool skims its rate to investment
+          target.balance += incoming - toInv;
+          contributeToInvestment(toInv, target.cur, pct + "% from " + p.name);
+        } else {
+          target.balance += incoming;
+        }
       } else {
         const inv = state.investment;
         const amt = convert(p.balance, p.cur, inv.cur);
@@ -688,14 +699,19 @@
   }
 
   // ============================================================ ACTIONS
-  function createPool(name, amount, endDate, cur) {
+  function createPool(name, amount, endDate, cur, investPct) {
     cur = cur || dispCur();
     state.pools.push({
       id: uid(), name: name, balance: amount,
-      endDate: fmtISO(endDate), createdDate: state.currentDate, initial: amount, cur: cur
+      endDate: fmtISO(endDate), createdDate: state.currentDate, initial: amount, cur: cur,
+      investPct: Math.max(0, Math.min(100, investPct || 0))   // % of future incoming surplus auto-invested
     });
     state.lastCurrency = cur;
     reconcileDay();   // new income raises today's allowance and may shrink a live deficit
+  }
+  function setPoolInvest(id, pct) {
+    const p = state.pools.find(x => x.id === id);
+    if (p) { p.investPct = Math.max(0, Math.min(100, pct || 0)); save(); }
   }
   function uid() { return "p" + (state.seq = (state.seq || 0) + 1) + "_" + state.currentDate; }
 
@@ -721,11 +737,11 @@
     save();
   }
   // Direct contribution into the investment pool (e.g. "invest on arrival" when adding income).
-  function contributeToInvestment(amount, cur, fromName) {
+  function contributeToInvestment(amount, cur, fromLabel) {
     const inv = state.investment;
     const amt = convert(amount, cur, inv.cur);
     inv.balance += amt;
-    inv.surpluses.unshift({ date: state.currentDate, amount: amt, cur: inv.cur, from: "Invest on arrival: " + fromName });
+    inv.surpluses.unshift({ date: state.currentDate, amount: amt, cur: inv.cur, from: fromLabel });
   }
   // Fully destructive: the pool's remaining balance disappears. No redistribution, no undo.
   function deletePool(id) {
@@ -972,6 +988,7 @@
             <div class="when"><b>${daysRemaining(p, ref) <= 1 ? "Last day" : daysRemaining(p, ref) + " days left"}</b>ends ${fmtMonthYear(parseISO(p.endDate))}</div>
           </div>
           <div class="bar"><i style="width:${pctLeft}%"></i></div>
+          <button class="poolinv ${(p.investPct || 0) > 0 ? "on" : ""}" data-action="edit-poolinvest" data-id="${p.id}">🔒 ${(p.investPct || 0) > 0 ? p.investPct + "% auto-invest" : "Set auto-invest"}</button>
         </div>`;
       }).join("");
     }
@@ -1345,6 +1362,21 @@
     upd();
   }
 
+  function openPoolInvest(id) {
+    const p = state.pools.find(x => x.id === id);
+    if (!p) return;
+    const v = p.investPct || 0;
+    openSheet(`
+      <h2>Auto-invest · ${esc(p.name)}</h2>
+      <div class="field">
+        <label>When another pool ends and its surplus flows into <b>${esc(p.name)}</b>, this share is skimmed straight to your investment pool.</label>
+        <input type="range" id="pi-range" class="inv-range" min="0" max="100" value="${v}" oninput="document.getElementById('pi-val').textContent=this.value+'%'" />
+        <div style="text-align:center;font-size:30px;font-weight:800;color:var(--invest-2);margin-top:8px" id="pi-val">${v}%</div>
+        <div style="text-align:center;font-size:12.5px;color:var(--muted)">Applies only to money arriving later — the current balance isn't moved.</div>
+      </div>
+      <button class="btn invest" data-action="save-poolinvest" data-id="${p.id}">Save</button>`);
+  }
+
   function openSettings() {
     const age = ratesAgeDays();
     const rateInfo = !state.rates
@@ -1456,8 +1488,8 @@
       if (cb && cb.checked) { const s = document.getElementById("in-pct"); pct = Math.max(0, Math.min(100, s ? (parseFloat(s.value) || 0) : 0)); }
       const investAmt = amt * (pct / 100);
       const poolAmt = amt - investAmt;
-      if (investAmt > 1e-9) contributeToInvestment(investAmt, cur, name || "Income");   // straight to investment
-      if (poolAmt > 1e-9) createPool(name || "Income", poolAmt, end, cur);              // remainder becomes the pool
+      if (investAmt > 1e-9) contributeToInvestment(investAmt, cur, "Invest on arrival: " + (name || "Income"));   // straight to investment
+      if (poolAmt > 1e-9) createPool(name || "Income", poolAmt, end, cur, pct);          // remainder becomes the pool; remember the rate
       else { state.lastCurrency = cur; reconcileDay(); }                                 // 100% invested: no pool
       save();
       investOn = false; investPct = 10;   // per-pool decision: reset for next time
@@ -1483,6 +1515,8 @@
       }
       return;
     }
+    if (a === "edit-poolinvest") { openPoolInvest(el.dataset.id); return; }
+    if (a === "save-poolinvest") { const r = document.getElementById("pi-range"); setPoolInvest(el.dataset.id, r ? parseInt(r.value, 10) : 0); closeSheet(); render(); return; }
 
     if (a === "save-settings") {
       const c = val("set-cur"); if (c) state.displayCurrency = c; reconcileDay(); save(); closeSheet(); render(); return;
@@ -1613,7 +1647,7 @@
     if (!("rates" in state)) state.rates = null;
     const dc = state.displayCurrency;
     if (!Array.isArray(state.pools)) state.pools = [];
-    state.pools.forEach(p => { if (!p.cur) p.cur = dc; });
+    state.pools.forEach(p => { if (!p.cur) p.cur = dc; if (typeof p.investPct !== "number") p.investPct = 0; });
     if (!Array.isArray(state.goals)) state.goals = [];
     state.goals.forEach(g => { if (!g.cur) g.cur = dc; });
     if (state.investment && !state.investment.cur) state.investment.cur = dc;
