@@ -337,6 +337,10 @@
   .chart-title { font-size: 15px; font-weight: 800; letter-spacing: -.2px; }
   .chart-wrap { position: relative; height: 210px; width: 100%; margin-top: 6px; }
   .chart-note { font-size: 12px; color: var(--muted); line-height: 1.4; }
+  details.src-chart > summary { list-style: none; cursor: pointer; display: flex; align-items: center; justify-content: space-between; }
+  details.src-chart > summary::-webkit-details-marker { display: none; }
+  details.src-chart > summary::after { content: "▾"; color: var(--muted); font-size: 13px; transition: transform .2s; }
+  details.src-chart[open] > summary::after { transform: rotate(180deg); }
 
   /* ---------- Bottom nav ---------- */
   nav#tabs {
@@ -765,6 +769,7 @@
     if (amount <= 0) return;
     src.value -= amount;
     src.contributed -= Math.min(amount, src.contributed);
+    (src.withdrawals = src.withdrawals || []).unshift({ date: state.currentDate, amount: amount, cur: src.cur });   // for the sources chart
     const target = poolCur || src.cur;
     createPool(name || "Liquidation", convert(amount, src.cur, target), endDate, target);
     save();
@@ -790,14 +795,23 @@
   }
   function createSource(name, cur, initVal) {
     const v = Math.max(0, initVal || 0);
-    const s = { id: uid(), name: name || "Source", cur: cur || dispCur(), contributed: v, value: v, valueUpdated: Date.now(), createdDate: state.currentDate, surpluses: [] };
+    const s = { id: uid(), name: name || "Source", cur: cur || dispCur(), contributed: v, value: v, valueUpdated: Date.now(), createdDate: state.currentDate, surpluses: [], withdrawals: [], valueLog: v > 0 ? [{ date: state.currentDate, value: v }] : [] };
     state.investmentSources.push(s);
     if (!defaultSource()) state.defaultSourceId = s.id;
     save();
     return s;
   }
   function renameSource(id, name) { const s = state.investmentSources.find(x => x.id === id); if (s && name) { s.name = name; save(); } }
-  function setSourceValue(id, value) { const s = state.investmentSources.find(x => x.id === id); if (s) { s.value = Math.max(0, value || 0); s.valueUpdated = Date.now(); save(); } }
+  function setSourceValue(id, value) {
+    const s = state.investmentSources.find(x => x.id === id);
+    if (!s) return;
+    s.value = Math.max(0, value || 0);
+    s.valueUpdated = Date.now();
+    if (!Array.isArray(s.valueLog)) s.valueLog = [];
+    s.valueLog = s.valueLog.filter(e => e.date !== state.currentDate);   // one manual point per day (latest wins)
+    s.valueLog.push({ date: state.currentDate, value: s.value });
+    save();
+  }
   function setDefaultSource(id) { if (state.investmentSources.find(x => x.id === id)) { state.defaultSourceId = id; save(); } }
   // Delete a source, migrating its invested/value/history into `targetId` (a sibling). The
   // default source can't be deleted (UI requires designating a new default first).
@@ -813,6 +827,11 @@
       src.surpluses.forEach(su => tgt.surpluses.push({ date: su.date, amount: convert(su.amount, su.cur || src.cur, tgt.cur), cur: tgt.cur, from: su.from }));
       tgt.surpluses.sort((a, b) => (a.date < b.date ? 1 : -1));
       if (tgt.surpluses.length > 500) tgt.surpluses.length = 500;
+      tgt.withdrawals = tgt.withdrawals || [];
+      (src.withdrawals || []).forEach(w => tgt.withdrawals.push({ date: w.date, amount: convert(w.amount, w.cur || src.cur, tgt.cur), cur: tgt.cur }));
+      tgt.withdrawals.sort((a, b) => (a.date < b.date ? 1 : -1));
+      tgt.valueLog = (tgt.valueLog || []).filter(e => e.date !== state.currentDate);
+      tgt.valueLog.push({ date: state.currentDate, value: tgt.value });   // record the merged value as a fresh point
     }
     state.investmentSources.splice(i, 1);
     save();
@@ -1423,14 +1442,17 @@
   }
   function mkLine(id, labels, dsDefs, opts) {
     const el = document.getElementById(id);
-    if (!el || !window.Chart) return;
+    if (!el || !window.Chart || Chart.getChart(el)) return;
     opts = opts || {};
     const pr = labels.length <= 2 ? 3 : 0;
     const datasets = dsDefs.map(ds => ({
       label: ds.label, data: ds.data, borderColor: ds.color,
       backgroundColor: ds.fill ? hexA(ds.color, opts.stacked ? 0.5 : 0.16) : ds.color,
       fill: ds.fill ? (opts.stacked ? true : "origin") : false,
-      tension: 0.3, borderWidth: 2, pointRadius: pr, pointHoverRadius: 3
+      borderDash: ds.dash ? [4, 4] : undefined,     // dotted = sparse, manually-entered series
+      spanGaps: !!ds.dash,                            // connect across the gaps (no interpolation of values)
+      tension: ds.dash ? 0 : 0.3,
+      borderWidth: 2, pointRadius: ds.points ? 3 : pr, pointHoverRadius: 3
     }));
     chartInstances.push(new Chart(el, {
       type: "line",
@@ -1450,7 +1472,6 @@
     }));
   }
   function drawCharts(data) {
-    destroyCharts();
     if (!window.Chart) return;
     const d = dispCur();
     // Each record stores amounts in the display currency of its day — convert to the current one.
@@ -1469,11 +1490,32 @@
     if (goalIds.length) mkLine("ch-goals", labels, goalIds.map((id, i) => ({ label: goalName[id], color: palette(i + 2), fill: false, data: data.map(p => { const e = (p.goals || []).find(x => x.id === id); return e ? cv(p, e.s) : 0; }) })));
     mkLine("ch-invest", labels, [{ label: "Investment balance", data: data.map(p => cv(p, p.invest)), color: "#6366f1", fill: true }]);
   }
+  // One chart per investment source: cumulative contributed, cumulative withdrawn, and the
+  // sparse, manually-entered current value (dotted, points only on update dates).
+  function drawSourceChart(srcId, data) {
+    const s = (state.investmentSources || []).find(x => x.id === srcId);
+    if (!s) return;
+    const d = dispCur();
+    const dates = data.map(p => p.date);
+    const labels = data.map(p => fmtChartLabel(p.date));
+    const sur = s.surpluses || [], wd = s.withdrawals || [];
+    const contributed = dates.map(D => sur.reduce((a, x) => a + (x.date <= D ? convert(x.amount, x.cur || s.cur, d) : 0), 0));
+    const withdrawn = dates.map(D => wd.reduce((a, x) => a + (x.date <= D ? convert(x.amount, x.cur || s.cur, d) : 0), 0));
+    const vmap = {}; (s.valueLog || []).forEach(v => { vmap[v.date] = v.value; });
+    const value = dates.map(D => (D in vmap) ? convert(vmap[D], s.cur, d) : null);
+    mkLine("ch-src-" + srcId, labels, [
+      { label: "Contributed", data: contributed, color: "#6366f1", fill: false },
+      { label: "Withdrawn", data: withdrawn, color: "#f59e0b", fill: false },
+      { label: "Current value", data: value, color: "#10b981", fill: false, dash: true, points: true }
+    ]);
+  }
   function renderCharts() {
+    destroyCharts();
     const data = rangedData();
     const hasData = data.length > 0;
     const hasPools = data.some(p => (p.pools || []).length);
     const hasGoals = data.some(p => (p.goals || []).length);
+    const sources = state.investmentSources || [];
     const seg = ["7", "30", "all"].map(r => `<button data-action="chart-range" data-range="${r}" class="${chartRange === r ? "on" : ""}">${r === "all" ? "All" : r + " days"}</button>`).join("");
     const card = (title, id, sub) => `<div class="chart-card"><div class="chart-title">${title}</div>${sub ? `<div class="chart-note" style="margin:2px 0 4px">${sub}</div>` : ""}<div class="chart-wrap"><canvas id="${id}"></canvas></div></div>`;
     let body;
@@ -1485,6 +1527,14 @@
         + (hasPools ? card("Pool contributions", "ch-pools", "Each pool's share of the allowance — pools fade out as they end") : "")
         + (hasGoals ? card("Goal contributions", "ch-goals", "Money flowing into each goal per day") : "")
         + card("Investment growth", "ch-invest", "Fed by arrival splits and pool-expiry sweeps");
+      if (sources.length) {
+        body += `<div class="section-title">Investment sources</div>`
+          + `<div class="chart-note" style="margin:0 4px 4px">Contributed vs withdrawn vs your manually-entered current value (dotted). The gap is rough gain/loss.</div>`
+          + sources.map((s, i) => `<details class="chart-card src-chart" data-src="${s.id}" ${i === 0 ? "open" : ""}>
+              <summary class="chart-title">${esc(s.name)}</summary>
+              <div class="chart-wrap" style="margin-top:10px"><canvas id="ch-src-${s.id}"></canvas></div>
+            </details>`).join("");
+      }
     }
     screen.innerHTML = `${topbar("Your money over time", "Charts", false)}
       <div class="pad fade-in">
@@ -1495,7 +1545,14 @@
     if (hasData) ensureChartJs((ok) => {
       const l = document.getElementById("chart-loading");
       if (ok === false) { if (l) { l.style.display = ""; l.textContent = "Charts need an internet connection to load the first time."; } return; }
-      if (tab === "charts") { drawCharts(data); if (l) l.style.display = "none"; }
+      if (tab !== "charts") return;
+      drawCharts(data);
+      if (l) l.style.display = "none";
+      // draw open source sections now; draw the rest lazily when expanded (a hidden canvas sizes to 0)
+      document.querySelectorAll("details.src-chart").forEach(det => {
+        if (det.open) drawSourceChart(det.dataset.src, data);
+        det.addEventListener("toggle", () => { if (det.open && tab === "charts") drawSourceChart(det.dataset.src, data); });
+      });
     });
   }
 
@@ -1972,6 +2029,8 @@
       if (typeof s.valueUpdated !== "number") s.valueUpdated = Date.now();
       if (!Array.isArray(s.surpluses)) s.surpluses = [];
       s.surpluses.forEach(su => { if (!su.cur) su.cur = s.cur; });
+      if (!Array.isArray(s.withdrawals)) s.withdrawals = [];
+      if (!Array.isArray(s.valueLog)) s.valueLog = (s.value > 0 ? [{ date: state.currentDate, value: s.value }] : []);
     });
     if (!state.defaultSourceId || !state.investmentSources.find(s => s.id === state.defaultSourceId)) state.defaultSourceId = (state.investmentSources[0] || {}).id || null;
     if (!Array.isArray(state.todayExpenses)) state.todayExpenses = [];
