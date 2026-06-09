@@ -1365,19 +1365,22 @@
   function drawCharts(data) {
     destroyCharts();
     if (!window.Chart) return;
+    const d = dispCur();
+    // Each record stores amounts in the display currency of its day — convert to the current one.
+    const cv = (p, val) => convert(val || 0, p.cur || d, d);
     const labels = data.map(p => fmtChartLabel(p.date));
     mkLine("ch-allowspend", labels, [
-      { label: "Allowance", data: data.map(p => p.allowance || 0), color: "#10b981", fill: false },
-      { label: "Spent", data: data.map(p => p.spent || 0), color: "#ef4444", fill: false }
+      { label: "Allowance", data: data.map(p => cv(p, p.allowance)), color: "#10b981", fill: false },
+      { label: "Spent", data: data.map(p => cv(p, p.spent)), color: "#ef4444", fill: false }
     ]);
-    mkLine("ch-allowance", labels, [{ label: "Daily allowance", data: data.map(p => p.allowance || 0), color: "#10b981", fill: true }]);
+    mkLine("ch-allowance", labels, [{ label: "Daily allowance", data: data.map(p => cv(p, p.allowance)), color: "#10b981", fill: true }]);
     const poolIds = [], poolName = {};
     data.forEach(p => (p.pools || []).forEach(pp => { if (!(pp.id in poolName)) { poolName[pp.id] = pp.name; poolIds.push(pp.id); } }));
-    if (poolIds.length) mkLine("ch-pools", labels, poolIds.map((id, i) => ({ label: poolName[id], color: palette(i), fill: true, data: data.map(p => { const e = (p.pools || []).find(x => x.id === id); return e ? e.c : 0; }) })), { stacked: true });
+    if (poolIds.length) mkLine("ch-pools", labels, poolIds.map((id, i) => ({ label: poolName[id], color: palette(i), fill: true, data: data.map(p => { const e = (p.pools || []).find(x => x.id === id); return e ? cv(p, e.c) : 0; }) })), { stacked: true });
     const goalIds = [], goalName = {};
     data.forEach(p => (p.goals || []).forEach(g => { if (!(g.id in goalName)) { goalName[g.id] = g.name; goalIds.push(g.id); } }));
-    if (goalIds.length) mkLine("ch-goals", labels, goalIds.map((id, i) => ({ label: goalName[id], color: palette(i + 2), fill: false, data: data.map(p => { const e = (p.goals || []).find(x => x.id === id); return e ? e.s : 0; }) })));
-    mkLine("ch-invest", labels, [{ label: "Investment balance", data: data.map(p => p.invest || 0), color: "#6366f1", fill: true }]);
+    if (goalIds.length) mkLine("ch-goals", labels, goalIds.map((id, i) => ({ label: goalName[id], color: palette(i + 2), fill: false, data: data.map(p => { const e = (p.goals || []).find(x => x.id === id); return e ? cv(p, e.s) : 0; }) })));
+    mkLine("ch-invest", labels, [{ label: "Investment balance", data: data.map(p => cv(p, p.invest)), color: "#6366f1", fill: true }]);
   }
   function renderCharts() {
     const data = rangedData();
