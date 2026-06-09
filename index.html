@@ -209,6 +209,23 @@
     width: 170px; height: 170px; border-radius: 50%; background: rgba(255,255,255,.10);
   }
 
+  .src-card { background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px 18px; margin-bottom: 12px; }
+  .src-card.default { border: 1.5px solid var(--invest); }
+  .src-top { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .src-top .name { font-size: 16.5px; font-weight: 800; letter-spacing: -.3px; }
+  .srcbadge { font-size: 10px; font-weight: 800; padding: 3px 8px; border-radius: 99px; background: var(--invest-soft); color: var(--invest-2); text-transform: uppercase; letter-spacing: .4px; vertical-align: middle; margin-left: 4px; }
+  .src-val { font-size: 26px; font-weight: 800; letter-spacing: -.6px; margin-top: 6px; }
+  .src-conv { font-size: 12.5px; color: var(--faint); font-weight: 600; }
+  .src-meta { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font-size: 13px; font-weight: 600; color: var(--muted); margin-top: 8px; }
+  .src-meta .gain { color: var(--accent-2); font-weight: 800; }
+  .src-meta .loss { color: var(--danger); font-weight: 800; }
+  .src-updated { font-size: 11.5px; color: var(--faint); margin-top: 6px; }
+  .src-card .acts { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+  .src-card .acts .btn { padding: 12px; font-size: 14.5px; }
+  .trow { display: flex; justify-content: space-between; align-items: center; padding: 8px 2px; font-size: 14px; color: var(--muted); }
+  .trow b { color: var(--text); font-size: 15px; }
+  .trow b.gain { color: var(--accent-2); }
+  .trow b.loss { color: var(--danger); }
   .ledger { display: flex; justify-content: space-between; align-items: center; padding: 13px 4px; border-bottom: 1px solid var(--border); }
   .ledger:last-child { border-bottom: none; }
   .ledger .lf { font-size: 14.5px; font-weight: 600; }
@@ -417,6 +434,7 @@
   let tab = "home";
   let addMode = "duration"; // or "date"
   let liqMode = "duration";
+  let liqSourceId = null;   // which investment source a liquidation draws from
   let goalOverrideOn = false;
   let investOn = false;     // "invest on arrival" toggle on the Add-income form
   let investPct = 10;
@@ -611,10 +629,7 @@
           target.balance += incoming;
         }
       } else {
-        const inv = state.investment;
-        const amt = convert(p.balance, p.cur, inv.cur);
-        inv.balance += amt;
-        inv.surpluses.unshift({ date: fmtISO(cur), amount: amt, cur: inv.cur, from: p.name });
+        contributeToInvestment(p.balance, p.cur, p.name);   // no surviving pool -> straight to the default investment source
       }
     }
     state.pools = survivors;
@@ -639,25 +654,27 @@
       log.push({ id: p.id, amount: takeNative });
       rem -= takeDisp;
     }
-    if (rem > 1e-9) {                                    // pools exhausted -> draw from investment
-      const inv = state.investment;
-      const balDisp = convert(inv.balance, inv.cur, d);
-      const takeDisp = Math.min(balDisp, rem);
-      if (takeDisp > 1e-9) {
-        const takeNative = convert(takeDisp, d, inv.cur);
-        inv.balance -= takeNative; if (inv.balance < 1e-9) inv.balance = 0;
-        log.push({ id: "investment", amount: takeNative });
+    if (rem > 1e-9) {                                    // pools exhausted -> draw from the default investment source's value
+      const src = defaultSource();
+      if (src) {
+        const balDisp = convert(src.value, src.cur, d);
+        const takeDisp = Math.min(balDisp, rem);
+        if (takeDisp > 1e-9) {
+          const takeNative = convert(takeDisp, d, src.cur);
+          src.value -= takeNative; if (src.value < 1e-9) src.value = 0;
+          log.push({ id: "inv", src: src.id, amount: takeNative });
+        }
       }
     }
   }
   // Restore balances debited by a spend log, in REVERSE shortest-horizon-first order (the
-  // last-debited entity — longest pool or investment — is refunded first). Skips any entity
-  // that no longer exists; clears the log.
+  // last-debited entity — longest pool or investment source — is refunded first). Skips any
+  // entity that no longer exists; clears the log.
   function reverseDebits(log) {
     if (!log) return;
     for (let i = log.length - 1; i >= 0; i--) {
       const dbt = log[i];
-      if (dbt.id === "investment") state.investment.balance += dbt.amount;
+      if (dbt.id === "inv") { const s = (state.investmentSources || []).find(x => x.id === dbt.src); if (s) s.value += dbt.amount; }
       else { const p = state.pools.find(x => x.id === dbt.id); if (p) p.balance += dbt.amount; }
     }
     log.length = 0;
@@ -702,7 +719,7 @@
       cur = addDays(cur, 1);
       state.currentDate = fmtISO(cur);
       expirePools(cur);              // run the day's expiry sweeps before snapshotting the investment balance
-      state.history.unshift({ date: finalized, spent: spent, allowance: allowance, saved: saved, cur: d, pools: poolsSnap, goals: goalsSnap, invest: convert(state.investment.balance, state.investment.cur, d) });
+      state.history.unshift({ date: finalized, spent: spent, allowance: allowance, saved: saved, cur: d, pools: poolsSnap, goals: goalsSnap, invest: investTotalValue(d) });
       if (state.history.length > 1200) state.history.length = 1200;
       state.todayExpenses = [];
       state.spendDebits = [];        // the day's spend is settled and permanent
@@ -739,22 +756,66 @@
     const i = state.todayExpenses.findIndex(e => e.id === id);
     if (i >= 0) { state.todayExpenses.splice(i, 1); reconcileDay(); save(); }
   }
-  // Amount is entered in the investment currency; the new pool is created in `poolCur`.
-  function liquidate(amount, name, endDate, poolCur) {
-    const inv = state.investment;
-    amount = Math.min(amount, inv.balance);
+  // Amount is entered in the source's currency; the new pool is created in `poolCur`.
+  // Withdrawing reduces both the source's current value and its cost basis (so it isn't a phantom loss).
+  function liquidate(amount, name, endDate, poolCur, sourceId) {
+    const src = state.investmentSources.find(s => s.id === sourceId) || defaultSource();
+    if (!src) return;
+    amount = Math.min(amount, src.value);
     if (amount <= 0) return;
-    inv.balance -= amount;
-    const target = poolCur || inv.cur;
-    createPool(name || "Liquidation", convert(amount, inv.cur, target), endDate, target);
+    src.value -= amount;
+    src.contributed -= Math.min(amount, src.contributed);
+    const target = poolCur || src.cur;
+    createPool(name || "Liquidation", convert(amount, src.cur, target), endDate, target);
     save();
   }
   // Direct contribution into the investment pool (e.g. "invest on arrival" when adding income).
+  // ---- Investment sources ----
+  function defaultSource() {
+    const list = state.investmentSources || [];
+    return list.find(s => s.id === state.defaultSourceId) || list[0] || null;
+  }
+  function investTotalValue(code) { const d = code || dispCur(); return (state.investmentSources || []).reduce((a, s) => a + convert(s.value || 0, s.cur, d), 0); }
+  function investTotalContributed(code) { const d = code || dispCur(); return (state.investmentSources || []).reduce((a, s) => a + convert(s.contributed || 0, s.cur, d), 0); }
+  // All inflows (arrival splits, expiry surpluses, goal overflow) land in the default source,
+  // raising BOTH its total invested (cost basis) and its current value by the cash amount.
   function contributeToInvestment(amount, cur, fromLabel) {
-    const inv = state.investment;
-    const amt = convert(amount, cur, inv.cur);
-    inv.balance += amt;
-    inv.surpluses.unshift({ date: state.currentDate, amount: amt, cur: inv.cur, from: fromLabel });
+    const src = defaultSource();
+    if (!src) return;
+    const amt = convert(amount, cur, src.cur);
+    src.contributed += amt;
+    src.value += amt;
+    src.surpluses.unshift({ date: state.currentDate, amount: amt, cur: src.cur, from: fromLabel });
+    if (src.surpluses.length > 500) src.surpluses.length = 500;
+  }
+  function createSource(name, cur, initVal) {
+    const v = Math.max(0, initVal || 0);
+    const s = { id: uid(), name: name || "Source", cur: cur || dispCur(), contributed: v, value: v, valueUpdated: Date.now(), createdDate: state.currentDate, surpluses: [] };
+    state.investmentSources.push(s);
+    if (!defaultSource()) state.defaultSourceId = s.id;
+    save();
+    return s;
+  }
+  function renameSource(id, name) { const s = state.investmentSources.find(x => x.id === id); if (s && name) { s.name = name; save(); } }
+  function setSourceValue(id, value) { const s = state.investmentSources.find(x => x.id === id); if (s) { s.value = Math.max(0, value || 0); s.valueUpdated = Date.now(); save(); } }
+  function setDefaultSource(id) { if (state.investmentSources.find(x => x.id === id)) { state.defaultSourceId = id; save(); } }
+  // Delete a source, migrating its invested/value/history into `targetId` (a sibling). The
+  // default source can't be deleted (UI requires designating a new default first).
+  function deleteSource(id, targetId) {
+    if (id === state.defaultSourceId) return;
+    const i = state.investmentSources.findIndex(x => x.id === id);
+    if (i < 0) return;
+    const src = state.investmentSources[i];
+    const tgt = state.investmentSources.find(x => x.id === targetId);
+    if (tgt && tgt.id !== id) {
+      tgt.contributed += convert(src.contributed, src.cur, tgt.cur);
+      tgt.value += convert(src.value, src.cur, tgt.cur);
+      src.surpluses.forEach(su => tgt.surpluses.push({ date: su.date, amount: convert(su.amount, su.cur || src.cur, tgt.cur), cur: tgt.cur, from: su.from }));
+      tgt.surpluses.sort((a, b) => (a.date < b.date ? 1 : -1));
+      if (tgt.surpluses.length > 500) tgt.surpluses.length = 500;
+    }
+    state.investmentSources.splice(i, 1);
+    save();
   }
   // Fully destructive: the pool's remaining balance disappears. No redistribution, no undo.
   function deletePool(id) {
@@ -764,6 +825,16 @@
     save();
   }
   function clockNow() { const d = new Date(); return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }); }
+  function timeAgo(ts) {
+    if (!ts) return "never";
+    const s = Math.floor((Date.now() - ts) / 1000);
+    if (s < 60) return "just now";
+    const m = Math.floor(s / 60); if (m < 60) return m + "m ago";
+    const h = Math.floor(m / 60); if (h < 24) return h + "h ago";
+    const dd = Math.floor(h / 24); if (dd < 30) return dd + "d ago";
+    const mo = Math.floor(dd / 30); if (mo < 12) return mo + "mo ago";
+    return Math.floor(mo / 12) + "y ago";
+  }
 
   // ---- Goals (ratio-based funding) ----
   // Trailing-average daily leftover, used only to *estimate* fill amounts for display.
@@ -858,12 +929,7 @@
       const d = dispCur();
       const res = distributeToGoals(convert(g.balance, g.cur, d), state.goals);   // pot in display cur
       state.goals.forEach(x => { if (res.dep[x.id]) x.balance += convert(res.dep[x.id], d, x.cur); });
-      if (res.unplaced > 1e-9) {
-        const inv = state.investment;
-        const amt = convert(res.unplaced, d, inv.cur);
-        inv.balance += amt;
-        inv.surpluses.unshift({ date: state.currentDate, amount: amt, cur: inv.cur, from: "Goal: " + g.name });
-      }
+      if (res.unplaced > 1e-9) contributeToInvestment(res.unplaced, d, "Goal: " + g.name);   // overflow -> default source
     }
     save();
   }
@@ -936,7 +1002,7 @@
     const spent = todaySpent();
     const remaining = allowance - spent;
     const inDeficit = remaining < -1e-9;
-    const fromInv = inDeficit && (state.spendDebits || []).some(x => x.id === "investment");
+    const fromInv = inDeficit && (state.spendDebits || []).some(x => x.id === "inv");
     const pct = allowance > 0 ? Math.min(100, (spent / allowance) * 100) : (spent > 0 ? 100 : 0);
     const [ai, ac] = moneyParts(allowance);
     const dateLine = new Date().toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
@@ -1126,36 +1192,57 @@
 
   // ---------- INVESTMENT
   function renderInvestment() {
-    const inv = state.investment;
-    const [bi, bc] = partsFor(inv.balance, inv.cur);
-    const heroConv = convLine(inv.balance, inv.cur);
-    let ledger;
-    if (!inv.surpluses.length) {
-      ledger = `<div class="empty" style="padding:30px 10px"><div class="emoji">🔒</div><p>No surpluses yet.<br>When a pool reaches its end date, leftover money flows here automatically.</p></div>`;
-    } else {
-      ledger = `<div class="card" style="padding:4px 16px">` + inv.surpluses.map(s => {
-        const sc = s.cur || inv.cur;
-        const cl = convLine(s.amount, sc);
-        return `
-        <div class="ledger">
-          <div><div class="lf">From ${esc(s.from)}</div><div class="ld">${fmtFull(parseISO(s.date))}${cl ? " · " + cl : ""}</div></div>
-          <div class="la">+${fmtAmt(s.amount, sc).replace(/^-/, "")}</div>
-        </div>`;
-      }).join("") + `</div>`;
-    }
+    const d = dispCur();
+    const sources = state.investmentSources || [];
+    const totVal = investTotalValue(d);
+    const totContrib = investTotalContributed(d);
+    const gain = totVal - totContrib;
+    const gainPct = totContrib > 1e-9 ? (gain / totContrib * 100) : 0;
+    const [bi, bc] = moneyParts(totVal);
+
+    const cards = sources.map(s => {
+      const isDef = s.id === state.defaultSourceId;
+      const g = (s.value || 0) - (s.contributed || 0);
+      const pctG = s.contributed > 1e-9 ? (g / s.contributed * 100) : 0;
+      const cl = convLine(s.value, s.cur);
+      const lastInflow = (s.surpluses || [])[0];
+      return `
+      <div class="src-card ${isDef ? "default" : ""}">
+        <div class="src-top">
+          <div class="name">${esc(s.name)}${isDef ? ` <span class="srcbadge">Default</span>` : ""}</div>
+          <button class="icon-btn" data-action="manage-src" data-id="${s.id}">${svg("gear")}</button>
+        </div>
+        <div class="src-val">${fmtAmt(s.value, s.cur)}</div>
+        ${cl ? `<div class="src-conv">${cl}</div>` : ""}
+        <div class="src-meta">
+          <span>Invested ${fmtAmt(s.contributed, s.cur)}</span>
+          <span class="${g >= 0 ? "gain" : "loss"}">${g >= 0 ? "▲" : "▼"} ${fmtAmt(Math.abs(g), s.cur)} · ${(pctG >= 0 ? "+" : "") + pctG.toFixed(1)}%</span>
+        </div>
+        <div class="src-updated">Value updated ${timeAgo(s.valueUpdated)}${lastInflow ? " · last inflow " + timeAgo(parseISO(lastInflow.date).getTime()) : ""}</div>
+        <div class="acts">
+          <button class="btn invest" data-action="edit-srcvalue" data-id="${s.id}">Update value</button>
+          ${isDef ? "" : `<button class="linkbtn" data-action="make-default" data-id="${s.id}">Make default</button>`}
+        </div>
+      </div>`;
+    }).join("");
 
     screen.innerHTML = `
       ${topbar("Long-term capital", "Investment", false)}
       <div class="invest-hero fade-in">
-        <div class="lockrow">${svg("lock")} INVESTMENT POOL · ${inv.cur}</div>
+        <div class="lockrow">${svg("lock")} TOTAL INVESTMENT VALUE</div>
         <div class="big">${bi}<span class="cents">${bc}</span></div>
-        ${heroConv ? `<div class="sub" style="opacity:.95">${heroConv}</div>` : ""}
-        <div class="sub">Locked away on a 100-year horizon. Does not fund daily spending — surpluses compound here until you liquidate.</div>
+        <div class="sub">Invested ${money(totContrib)} · <b>${gain >= 0 ? "+" : ""}${money(gain)}</b> (${(gainPct >= 0 ? "+" : "") + gainPct.toFixed(1)}%)</div>
       </div>
       <div class="pad" style="margin-top:16px">
-        <button class="btn invest" data-action="open-liquidate">${svg("unlock")} Liquidate to spendable</button>
-        <div class="section-title">Surplus history</div>
-        ${ledger}
+        <button class="btn ghost" data-action="open-addsource">${svg("plus")} Add a source</button>
+        <div class="section-title">Sources · inflows go to the default</div>
+        ${cards}
+        <div class="card" style="margin-top:6px">
+          <div class="trow"><span>Total invested</span><b>${money(totContrib)}</b></div>
+          <div class="trow"><span>Total current value</span><b>${money(totVal)}</b></div>
+          <div class="trow"><span>Gain / loss</span><b class="${gain >= 0 ? "gain" : "loss"}">${gain >= 0 ? "+" : ""}${money(gain)}</b></div>
+        </div>
+        <button class="btn invest" data-action="open-liquidate" style="margin-top:14px">${svg("unlock")} Liquidate to spendable</button>
       </div>
     `;
   }
@@ -1326,7 +1413,7 @@
     const debit = {};
     (state.spendDebits || []).forEach(x => { if (x.id !== "investment") debit[x.id] = (debit[x.id] || 0) + x.amount; });
     const pools = state.pools.map(p => ({ id: p.id, name: p.name, c: convert((p.balance + (debit[p.id] || 0)) / daysRemaining(p, todayDate()), p.cur, d) }));
-    return { date: fmtISO(todayDate()), spent: todaySpent(), allowance: state.todayAllowance || 0, saved: 0, cur: d, pools: pools, goals: [], invest: convert(state.investment.balance, state.investment.cur, d) };
+    return { date: fmtISO(todayDate()), spent: todaySpent(), allowance: state.todayAllowance || 0, saved: 0, cur: d, pools: pools, goals: [], invest: investTotalValue(d) };
   }
   function rangedData() {
     const chrono = state.history.slice().reverse();   // oldest -> newest
@@ -1438,12 +1525,17 @@
     modalRoot.classList.add("open");
   }
   function renderLiquidateSheet() {
-    const inv = state.investment;
+    const sources = state.investmentSources || [];
+    if (!liqSourceId || !sources.find(s => s.id === liqSourceId)) liqSourceId = state.defaultSourceId;
+    const src = sources.find(s => s.id === liqSourceId) || sources[0];
+    if (!src) { sheet.innerHTML = `<div class="grab"></div><h2>Liquidate</h2><p style="color:var(--muted);padding:0 4px">No investment sources yet.</p>`; return; }
+    const srcOpts = sources.map(s => `<option value="${s.id}" ${s.id === src.id ? "selected" : ""}>${esc(s.name)} · ${fmtAmt(s.value, s.cur)}</option>`).join("");
     sheet.innerHTML = `<div class="grab"></div>
-      <h2>Liquidate investment</h2>
+      <h2>Liquidate to spendable</h2>
+      ${sources.length > 1 ? `<div class="field"><label>From source</label><select class="input cur-select" id="liq-src">${srcOpts}</select></div>` : ""}
       <div class="field">
-        <label>Amount · available ${fmtAmt(inv.balance, inv.cur)}</label>
-        <div class="amount-wrap"><span class="sym">${curSym(inv.cur)}</span><input class="input" id="liq-amt" type="text" inputmode="decimal" placeholder="0.00" /></div>
+        <label>Amount · available ${fmtAmt(src.value, src.cur)}</label>
+        <div class="amount-wrap"><span class="sym">${curSym(src.cur)}</span><input class="input" id="liq-amt" type="text" inputmode="decimal" placeholder="0.00" /></div>
       </div>
       <div class="field"><label>New pool currency</label>${currencySelect("liq-cur", state.lastCurrency)}</div>
       <div class="field"><label>Name</label><input class="input" id="liq-name" type="text" placeholder="e.g. Vacation fund" maxlength="40" /></div>
@@ -1463,6 +1555,8 @@
       <div class="preview invest" id="liq-preview">This creates a new spendable pool.</div>
       <button class="btn invest" data-action="do-liquidate" style="margin-top:16px">${svg("unlock")} Create pool</button>
     `;
+    const ss = document.getElementById("liq-src");
+    if (ss) ss.addEventListener("change", () => { liqSourceId = ss.value; renderLiquidateSheet(); });
     bindLiqPreview();
   }
   function readLiqEndDate() {
@@ -1475,21 +1569,81 @@
     return addYears(base, n);
   }
   function bindLiqPreview() {
-    const inv = state.investment;
+    const src = (state.investmentSources || []).find(s => s.id === liqSourceId) || defaultSource();
     const upd = () => {
+      if (!src) return;
       const amt = parseFloat(document.getElementById("liq-amt").value);
-      const poolCur = val("liq-cur") || inv.cur;
+      const poolCur = val("liq-cur") || src.cur;
       const end = readLiqEndDate();
       const pv = document.getElementById("liq-preview");
       if (!pv) return;
       if (!amt || amt <= 0 || !end) { pv.innerHTML = "This creates a new spendable pool."; return; }
-      const capped = Math.min(amt, inv.balance);
-      const poolAmt = convert(capped, inv.cur, poolCur);
+      const capped = Math.min(amt, src.value);
+      const poolAmt = convert(capped, src.cur, poolCur);
       const dr = Math.max(1, daysBetween(todayDate(), end) + 1);
-      pv.innerHTML = `Moves <b>${fmtAmt(capped, inv.cur)}</b> into a new <b>${poolCur}</b> pool of <b>${fmtAmt(poolAmt, poolCur)}</b> ending <b>${fmtFull(end)}</b>, adding ~<b>${fmtAmt(poolAmt / dr, poolCur)} / day</b>.`;
+      pv.innerHTML = `Moves <b>${fmtAmt(capped, src.cur)}</b> from <b>${esc(src.name)}</b> into a new <b>${poolCur}</b> pool of <b>${fmtAmt(poolAmt, poolCur)}</b> ending <b>${fmtFull(end)}</b>, adding ~<b>${fmtAmt(poolAmt / dr, poolCur)} / day</b>.`;
     };
     ["liq-amt", "liq-dur", "liq-unit", "liq-date", "liq-cur"].forEach(id => { const el = document.getElementById(id); if (el) { el.addEventListener("input", upd); el.addEventListener("change", upd); } });
     upd();
+  }
+
+  function openAddSource() {
+    openSheet(`
+      <h2>New investment source</h2>
+      <div class="field"><label>Name</label><input class="input" id="as-name" placeholder="e.g. Brokerage, Crypto, 401k" maxlength="40" /></div>
+      <div class="field"><label>Currency</label>${currencySelect("as-cur", state.lastCurrency)}</div>
+      <div class="field"><label>Starting value (optional)</label>
+        <div class="amount-wrap"><span class="sym" id="as-sym">${curSym(state.lastCurrency)}</span><input class="input" id="as-val" type="text" inputmode="decimal" placeholder="0.00" /></div>
+      </div>
+      <div class="preview invest">New inflows always land in the default source — set this one as default later if you want them here.</div>
+      <button class="btn invest" data-action="create-source" style="margin-top:14px">${svg("plus")} Create source</button>`);
+    bindCurSym("as-cur", "as-sym");
+    setTimeout(() => { const el = document.getElementById("as-name"); if (el) el.focus(); }, 250);
+  }
+  function openSrcValue(id) {
+    const s = state.investmentSources.find(x => x.id === id);
+    if (!s) return;
+    openSheet(`
+      <h2>Update value · ${esc(s.name)}</h2>
+      <div class="field"><label>Current market value</label>
+        <div class="amount-wrap"><span class="sym">${curSym(s.cur)}</span><input class="input" id="sv-amt" type="text" inputmode="decimal" value="${(s.value || 0).toFixed(2)}" /></div>
+      </div>
+      <div class="field" style="font-size:12.5px;color:var(--muted)">Invested so far: ${fmtAmt(s.contributed, s.cur)}. Enter what it's worth today — the difference is your gain/loss.</div>
+      <button class="btn invest" data-action="save-srcvalue" data-id="${s.id}">Save value</button>`);
+    setTimeout(() => { const el = document.getElementById("sv-amt"); if (el) { el.focus(); if (el.select) el.select(); } }, 250);
+  }
+  function openManageSrc(id) {
+    const s = state.investmentSources.find(x => x.id === id);
+    if (!s) return;
+    const isDef = s.id === state.defaultSourceId;
+    openSheet(`
+      <h2>Manage · ${esc(s.name)}</h2>
+      <div class="field"><label>Name</label><input class="input" id="mn-name" value="${esc(s.name)}" maxlength="40" /></div>
+      <button class="btn ghost" data-action="save-srcname" data-id="${s.id}">Save name</button>
+      ${isDef
+        ? `<div style="font-size:12.5px;color:var(--muted);margin-top:16px">This is the <b>default</b> source — all investment inflows arrive here. To delete it, make another source the default first.</div>`
+        : `<button class="btn ghost" data-action="make-default" data-id="${s.id}" style="margin-top:10px">Set as default</button>
+           <button class="btn danger" data-action="del-src" data-id="${s.id}" style="margin-top:10px">${svg("trash")} Delete source</button>`}`);
+  }
+  function openDeleteSrc(id) {
+    const s = state.investmentSources.find(x => x.id === id);
+    if (!s || id === state.defaultSourceId) return;
+    const others = state.investmentSources.filter(x => x.id !== id);
+    const hasBal = (s.value || 0) > 1e-9 || (s.contributed || 0) > 1e-9 || (s.surpluses || []).length;
+    if (!hasBal || !others.length) {
+      openSheet(`<h2>Delete ${esc(s.name)}?</h2>
+        <div style="font-size:13.5px;color:var(--muted);margin:0 4px 14px">${hasBal ? "This holds " + fmtAmt(s.value, s.cur) + " and there's nowhere to move it — deleting discards it." : "This source is empty."} This can't be undone.</div>
+        <button class="btn danger" data-action="migrate-del" data-id="${s.id}" data-target="">${svg("trash")} Delete source</button>`);
+      return;
+    }
+    openSheet(`
+      <h2>Delete ${esc(s.name)}</h2>
+      <div style="font-size:13.5px;color:var(--muted);margin:0 4px 12px">Holds <b>${fmtAmt(s.value, s.cur)}</b> (invested ${fmtAmt(s.contributed, s.cur)}). Move its value and history into:</div>
+      ${others.map(o => `<button class="btn ghost" data-action="migrate-del" data-id="${s.id}" data-target="${o.id}" style="margin-top:8px">${esc(o.name)}</button>`).join("")}
+      <details style="margin-top:12px"><summary style="font-size:12.5px;color:var(--muted)">Or move into a brand-new source</summary>
+        <input class="input" id="mig-name" placeholder="New source name" maxlength="40" style="margin-top:8px" />
+        <button class="btn ghost" data-action="migrate-new" data-id="${s.id}" style="margin-top:8px">Create &amp; move</button>
+      </details>`);
   }
 
   function openPoolInvest(id) {
@@ -1633,8 +1787,29 @@
       const amt = num("liq-amt"); const end = readLiqEndDate();
       if (!(amt > 0)) { shake("liq-amt"); return; }
       if (!end || end < todayDate()) return;
-      if (state.investment.balance <= 0) { closeSheet(); return; }
-      liquidate(amt, val("liq-name"), end, val("liq-cur")); closeSheet(); tab = "pools"; render(); return;
+      const src = (state.investmentSources || []).find(s => s.id === liqSourceId) || defaultSource();
+      if (!src || src.value <= 0) { closeSheet(); return; }
+      liquidate(amt, val("liq-name"), end, val("liq-cur"), liqSourceId); closeSheet(); tab = "investment"; render(); return;
+    }
+
+    // investment sources
+    if (a === "open-addsource") { openAddSource(); return; }
+    if (a === "create-source") {
+      const v = num("as-val");
+      createSource(val("as-name") || "Source", val("as-cur") || dispCur(), isFinite(v) && v > 0 ? v : 0);
+      closeSheet(); render(); return;
+    }
+    if (a === "edit-srcvalue") { openSrcValue(el.dataset.id); return; }
+    if (a === "save-srcvalue") { const v = num("sv-amt"); setSourceValue(el.dataset.id, isFinite(v) ? v : 0); closeSheet(); render(); return; }
+    if (a === "manage-src") { openManageSrc(el.dataset.id); return; }
+    if (a === "save-srcname") { renameSource(el.dataset.id, val("mn-name")); closeSheet(); render(); return; }
+    if (a === "make-default") { setDefaultSource(el.dataset.id); closeSheet(); render(); return; }
+    if (a === "del-src") { openDeleteSrc(el.dataset.id); return; }
+    if (a === "migrate-del") { deleteSource(el.dataset.id, el.dataset.target || null); closeSheet(); render(); return; }
+    if (a === "migrate-new") {
+      const s = state.investmentSources.find(x => x.id === el.dataset.id);
+      const ns = createSource(val("mig-name") || "Source", s ? s.cur : dispCur());
+      deleteSource(el.dataset.id, ns.id); closeSheet(); render(); return;
     }
 
     if (a === "del-pool") {
@@ -1754,7 +1929,8 @@
       currentDate: fmtISO(today),
       seq: 0,
       pools: [],
-      investment: { id: "investment", name: "Investment", balance: 0, endDate: fmtISO(addYears(today, 100)), createdDate: fmtISO(today), cur: displayCode, surpluses: [] },
+      investmentSources: [{ id: "investment", name: "Investment", cur: displayCode, contributed: 0, value: 0, valueUpdated: Date.now(), createdDate: fmtISO(today), surpluses: [] }],
+      defaultSourceId: "investment",
       goals: [],
       goalSplit: 50,
       todayExpenses: [],
@@ -1781,8 +1957,23 @@
     state.pools.forEach(p => { if (!p.cur) p.cur = dc; if (typeof p.investPct !== "number") p.investPct = 0; });
     if (!Array.isArray(state.goals)) state.goals = [];
     state.goals.forEach(g => { if (!g.cur) g.cur = dc; });
-    if (state.investment && !state.investment.cur) state.investment.cur = dc;
-    if (state.investment && Array.isArray(state.investment.surpluses)) state.investment.surpluses.forEach(s => { if (!s.cur) s.cur = dc; });
+    // single investment pool -> named investment sources
+    if (!Array.isArray(state.investmentSources)) {
+      const old = state.investment || {};
+      const bal = old.balance || 0;
+      state.investmentSources = [{ id: "investment", name: old.name || "Investment", cur: old.cur || dc, contributed: bal, value: bal, valueUpdated: Date.now(), createdDate: old.createdDate || state.currentDate, surpluses: Array.isArray(old.surpluses) ? old.surpluses : [] }];
+      state.defaultSourceId = "investment";
+      delete state.investment;
+    }
+    state.investmentSources.forEach(s => {
+      if (!s.cur) s.cur = dc;
+      if (typeof s.value !== "number") s.value = 0;
+      if (typeof s.contributed !== "number") s.contributed = s.value;
+      if (typeof s.valueUpdated !== "number") s.valueUpdated = Date.now();
+      if (!Array.isArray(s.surpluses)) s.surpluses = [];
+      s.surpluses.forEach(su => { if (!su.cur) su.cur = s.cur; });
+    });
+    if (!state.defaultSourceId || !state.investmentSources.find(s => s.id === state.defaultSourceId)) state.defaultSourceId = (state.investmentSources[0] || {}).id || null;
     if (!Array.isArray(state.todayExpenses)) state.todayExpenses = [];
     state.todayExpenses.forEach(e => { if (!e.cur) e.cur = dc; });
     if (Array.isArray(state.history)) state.history.forEach(h => { if (!h.cur) h.cur = dc; });
@@ -1875,7 +2066,7 @@
   // The state we sync — strips device-local fields (sign-in flags, the OAuth client id).
   function exportState() { const s = Object.assign({}, state); delete s.google; delete s.googleClientId; return s; }
   function localIsEmpty() {
-    return (state.pools || []).length === 0 && (state.goals || []).length === 0 && (state.history || []).length === 0 && (state.todayExpenses || []).length === 0 && (!state.investment || state.investment.balance <= 1e-9);
+    return (state.pools || []).length === 0 && (state.goals || []).length === 0 && (state.history || []).length === 0 && (state.todayExpenses || []).length === 0 && (state.investmentSources || []).every(s => (s.value||0) <= 1e-9 && (s.contributed||0) <= 1e-9);
   }
   // Replace local state with the remote document, preserving this device's sign-in info.
   function adoptRemote(remote) {
@@ -2004,7 +2195,7 @@
 
   // ============================================================ BOOT
   function boot() {
-    if (!state || !state.investment) {
+    if (!state || (!state.investmentSources && !state.investment)) {
       document.getElementById("setup").classList.add("show");
       renderSetupChips();
       return;
