@@ -314,6 +314,13 @@
   .amount-wrap .sym { font-size: 18px; }
   .amount-wrap .input { padding-left: 46px; }
 
+  /* ---------- Charts ---------- */
+  .chart-seg { margin-top: 10px; }
+  .chart-card { background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px; margin-top: 12px; }
+  .chart-title { font-size: 15px; font-weight: 800; letter-spacing: -.2px; }
+  .chart-wrap { position: relative; height: 210px; width: 100%; margin-top: 6px; }
+  .chart-note { font-size: 12px; color: var(--muted); line-height: 1.4; }
+
   /* ---------- Bottom nav ---------- */
   nav#tabs {
     position: fixed; bottom: 0; left: 50%; transform: translateX(-50%);
@@ -329,10 +336,10 @@
   }
   nav#tabs button {
     flex: 1; height: var(--nav-h); display: flex; flex-direction: column;
-    align-items: center; justify-content: center; gap: 3px;
-    color: var(--faint); font-size: 10.5px; font-weight: 700;
+    align-items: center; justify-content: center; gap: 2px;
+    color: var(--faint); font-size: 9.5px; font-weight: 700;
   }
-  nav#tabs button svg { width: 23px; height: 23px; }
+  nav#tabs button svg { width: 21px; height: 21px; }
   nav#tabs button.on { color: var(--accent-2); }
   nav#tabs button.on.invest-tab { color: var(--invest-2); }
   nav#tabs .add { flex: 0 0 auto; }
@@ -417,6 +424,8 @@
   const GOOGLE_CLIENT_ID = "826457931451-825v8i9ab5q8m57qrdirdchq69477bem.apps.googleusercontent.com";
   let gToken = null, gTokenExpiry = 0, gTokenClient = null, gTokenResolve = null;
   let syncStatus = "idle", uploadTimer = null, retryTimer = null;
+  // Charts
+  let chartRange = "30", chartInstances = [], chartLoading = false, chartLoadCbs = [];
 
   function load() {
     try { const raw = localStorage.getItem(KEY); return raw ? JSON.parse(raw) : null; }
@@ -677,20 +686,24 @@
       const spent = todaySpent();
       // Leftover split: a configurable share of any unspent allowance funds goals (by ratio,
       // cascading); the rest simply repools — it re-spreads over the remaining days.
+      // Per-pool contribution snapshot (spend-free, so it sums to the day's allowance) — for charts.
+      const poolsSnap = state.pools.map(p => ({ id: p.id, name: p.name, c: convert(contribution(p, cur), p.cur, d) }));
       const leftover = Math.max(0, allowance - spent);
-      let saved = 0;
+      let saved = 0, goalsSnap = [];
       if (state.goals.length && leftover > 1e-9 && state.goalSplit > 0) {
         const res = distributeToGoals(leftover * (state.goalSplit / 100), state.goals);   // dep in display cur
         state.goals.forEach(g => { if (res.dep[g.id]) g.balance += convert(res.dep[g.id], d, g.cur); });
+        goalsSnap = state.goals.filter(g => (res.dep[g.id] || 0) > 1e-9).map(g => ({ id: g.id, name: g.name, s: res.dep[g.id] }));
         saved = res.placed;
       }
       pullSpend(spent, []);          // expenses: settled shortest-horizon-first → investment (now permanent)
       deductSpending(saved, cur);    // goal funding only — the repool of leftover into goals
-      state.history.unshift({ date: state.currentDate, spent: spent, allowance: allowance, saved: saved, cur: d });
-      if (state.history.length > 1200) state.history.length = 1200;
+      const finalized = state.currentDate;
       cur = addDays(cur, 1);
       state.currentDate = fmtISO(cur);
-      expirePools(cur);
+      expirePools(cur);              // run the day's expiry sweeps before snapshotting the investment balance
+      state.history.unshift({ date: finalized, spent: spent, allowance: allowance, saved: saved, cur: d, pools: poolsSnap, goals: goalsSnap, invest: convert(state.investment.balance, state.investment.cur, d) });
+      if (state.history.length > 1200) state.history.length = 1200;
       state.todayExpenses = [];
       state.spendDebits = [];        // the day's spend is settled and permanent
     }
@@ -879,7 +892,8 @@
     target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.4"/>',
     check: '<polyline points="20 6 9 17 4 12"/>',
     sliders: '<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>',
-    alert: '<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>'
+    alert: '<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+    chart: '<line x1="3" y1="21" x2="21" y2="21"/><line x1="6" y1="21" x2="6" y2="14"/><line x1="11" y1="21" x2="11" y2="7"/><line x1="16" y1="21" x2="16" y2="11"/><line x1="21" y1="21" x2="21" y2="4"/>'
   };
   const svg = (k, w) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${w || 2}" stroke-linecap="round" stroke-linejoin="round">${I[k]}</svg>`;
 
@@ -887,10 +901,12 @@
   const screen = document.getElementById("screen");
 
   function render() {
+    destroyCharts();
     if (tab === "home") renderHome();
     else if (tab === "pools") renderPools();
     else if (tab === "goals") renderGoals();
     else if (tab === "add") renderAdd();
+    else if (tab === "charts") renderCharts();
     else if (tab === "investment") renderInvestment();
     else if (tab === "history") renderHistory();
     renderTabs();
@@ -904,6 +920,7 @@
       t("pools", "pools", "pools", "Pools") +
       t("goals", "goals", "target", "Goals") +
       `<button class="add" data-action="nav" data-tab="add"><span class="fab">${svg("plus", 2.4)}</span></button>` +
+      t("charts", "charts", "chart", "Charts") +
       t("investment", "investment", "lock", "Invest") +
       t("history", "history", "clock", "History");
   }
@@ -1282,6 +1299,116 @@
     });
   }
 
+  // ============================================================ CHARTS
+  const CHART_SRC = "https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js";
+  const PALETTE = ["#10b981", "#6366f1", "#f59e0b", "#ef4444", "#0ea5e9", "#ec4899", "#14b8a6", "#a855f7", "#84cc16", "#f97316"];
+  function palette(i) { return PALETTE[((i % PALETTE.length) + PALETTE.length) % PALETTE.length]; }
+  function hexA(hex, a) { const n = parseInt(hex.slice(1), 16); return "rgba(" + ((n >> 16) & 255) + "," + ((n >> 8) & 255) + "," + (n & 255) + "," + a + ")"; }
+  function shortMoney(n) { const s = curSym(dispCur()); const a = Math.abs(n); if (a >= 1e6) return s + (n / 1e6).toFixed(1) + "M"; if (a >= 1000) return s + (n / 1000).toFixed(1) + "k"; return s + Math.round(n); }
+  function fmtChartLabel(iso) { return parseISO(iso).toLocaleDateString(undefined, { day: "numeric", month: "short" }); }
+  function destroyCharts() { chartInstances.forEach(c => { try { c.destroy(); } catch (e) {} }); chartInstances = []; }
+  // Lazy-load Chart.js from CDN (cached by the service worker for offline use after first load).
+  function ensureChartJs(cb) {
+    if (window.Chart) return cb(true);
+    chartLoadCbs.push(cb);
+    if (chartLoading) return;
+    chartLoading = true;
+    const s = document.createElement("script");
+    s.src = CHART_SRC;
+    s.onload = () => { chartLoading = false; const cbs = chartLoadCbs; chartLoadCbs = []; cbs.forEach(f => f(true)); };
+    s.onerror = () => { chartLoading = false; const cbs = chartLoadCbs; chartLoadCbs = []; cbs.forEach(f => f(false)); };
+    document.head.appendChild(s);
+  }
+  // Best-effort point for the in-progress day; adds back today's spend debits so each pool's
+  // contribution is spend-free and the breakdown sums to today's allowance.
+  function todayPoint() {
+    const d = dispCur();
+    const debit = {};
+    (state.spendDebits || []).forEach(x => { if (x.id !== "investment") debit[x.id] = (debit[x.id] || 0) + x.amount; });
+    const pools = state.pools.map(p => ({ id: p.id, name: p.name, c: convert((p.balance + (debit[p.id] || 0)) / daysRemaining(p, todayDate()), p.cur, d) }));
+    return { date: fmtISO(todayDate()), spent: todaySpent(), allowance: state.todayAllowance || 0, saved: 0, cur: d, pools: pools, goals: [], invest: convert(state.investment.balance, state.investment.cur, d) };
+  }
+  function rangedData() {
+    const chrono = state.history.slice().reverse();   // oldest -> newest
+    chrono.push(todayPoint());                          // include the live current day
+    const n = chartRange === "all" ? chrono.length : parseInt(chartRange, 10);
+    return chrono.slice(-n);
+  }
+  function mkLine(id, labels, dsDefs, opts) {
+    const el = document.getElementById(id);
+    if (!el || !window.Chart) return;
+    opts = opts || {};
+    const pr = labels.length <= 2 ? 3 : 0;
+    const datasets = dsDefs.map(ds => ({
+      label: ds.label, data: ds.data, borderColor: ds.color,
+      backgroundColor: ds.fill ? hexA(ds.color, opts.stacked ? 0.5 : 0.16) : ds.color,
+      fill: ds.fill ? (opts.stacked ? true : "origin") : false,
+      tension: 0.3, borderWidth: 2, pointRadius: pr, pointHoverRadius: 3
+    }));
+    chartInstances.push(new Chart(el, {
+      type: "line",
+      data: { labels: labels, datasets: datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { intersect: false, mode: "index" },
+        plugins: {
+          legend: { display: datasets.length > 1, position: "top", labels: { boxWidth: 10, font: { size: 11 }, color: "#64748b", usePointStyle: true } },
+          tooltip: { callbacks: { label: (c) => c.dataset.label + ": " + fmtAmt(c.parsed.y, dispCur()) } }
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { maxTicksLimit: 6, autoSkip: true, maxRotation: 0, font: { size: 10 }, color: "#9aa3b2" } },
+          y: { stacked: !!opts.stacked, beginAtZero: true, grid: { color: "#eef0f3" }, ticks: { maxTicksLimit: 5, font: { size: 10 }, color: "#9aa3b2", callback: (v) => shortMoney(v) } }
+        }
+      }
+    }));
+  }
+  function drawCharts(data) {
+    destroyCharts();
+    if (!window.Chart) return;
+    const labels = data.map(p => fmtChartLabel(p.date));
+    mkLine("ch-allowspend", labels, [
+      { label: "Allowance", data: data.map(p => p.allowance || 0), color: "#10b981", fill: false },
+      { label: "Spent", data: data.map(p => p.spent || 0), color: "#ef4444", fill: false }
+    ]);
+    mkLine("ch-allowance", labels, [{ label: "Daily allowance", data: data.map(p => p.allowance || 0), color: "#10b981", fill: true }]);
+    const poolIds = [], poolName = {};
+    data.forEach(p => (p.pools || []).forEach(pp => { if (!(pp.id in poolName)) { poolName[pp.id] = pp.name; poolIds.push(pp.id); } }));
+    if (poolIds.length) mkLine("ch-pools", labels, poolIds.map((id, i) => ({ label: poolName[id], color: palette(i), fill: true, data: data.map(p => { const e = (p.pools || []).find(x => x.id === id); return e ? e.c : 0; }) })), { stacked: true });
+    const goalIds = [], goalName = {};
+    data.forEach(p => (p.goals || []).forEach(g => { if (!(g.id in goalName)) { goalName[g.id] = g.name; goalIds.push(g.id); } }));
+    if (goalIds.length) mkLine("ch-goals", labels, goalIds.map((id, i) => ({ label: goalName[id], color: palette(i + 2), fill: false, data: data.map(p => { const e = (p.goals || []).find(x => x.id === id); return e ? e.s : 0; }) })));
+    mkLine("ch-invest", labels, [{ label: "Investment balance", data: data.map(p => p.invest || 0), color: "#6366f1", fill: true }]);
+  }
+  function renderCharts() {
+    const data = rangedData();
+    const hasData = data.length > 0;
+    const hasPools = data.some(p => (p.pools || []).length);
+    const hasGoals = data.some(p => (p.goals || []).length);
+    const seg = ["7", "30", "all"].map(r => `<button data-action="chart-range" data-range="${r}" class="${chartRange === r ? "on" : ""}">${r === "all" ? "All" : r + " days"}</button>`).join("");
+    const card = (title, id, sub) => `<div class="chart-card"><div class="chart-title">${title}</div>${sub ? `<div class="chart-note" style="margin:2px 0 4px">${sub}</div>` : ""}<div class="chart-wrap"><canvas id="${id}"></canvas></div></div>`;
+    let body;
+    if (!hasData) {
+      body = `<div class="empty"><div class="emoji">📈</div><p>Charts appear as you use the app.<br>Log a few days and they'll fill in.</p></div>`;
+    } else {
+      body = card("Allowance vs spending", "ch-allowspend", "Your daily budget against what you actually spent")
+        + card("Daily allowance trend", "ch-allowance", "Rises as you underspend; dips after heavy days or pool expiries")
+        + (hasPools ? card("Pool contributions", "ch-pools", "Each pool's share of the allowance — pools fade out as they end") : "")
+        + (hasGoals ? card("Goal contributions", "ch-goals", "Money flowing into each goal per day") : "")
+        + card("Investment growth", "ch-invest", "Fed by arrival splits and pool-expiry sweeps");
+    }
+    screen.innerHTML = `${topbar("Your money over time", "Charts", false)}
+      <div class="pad fade-in">
+        <div class="seg chart-seg">${seg}</div>
+        ${body}
+        <div class="chart-note" id="chart-loading" style="text-align:center;margin-top:12px;${(!hasData || window.Chart) ? "display:none" : ""}">Loading charts…</div>
+      </div>`;
+    if (hasData) ensureChartJs((ok) => {
+      const l = document.getElementById("chart-loading");
+      if (ok === false) { if (l) { l.style.display = ""; l.textContent = "Charts need an internet connection to load the first time."; } return; }
+      if (tab === "charts") { drawCharts(data); if (l) l.style.display = "none"; }
+    });
+  }
+
   // ============================================================ MODALS
   const modalRoot = document.getElementById("modal-root");
   const sheet = document.getElementById("sheet");
@@ -1467,6 +1594,7 @@
     const a = el.dataset.action;
 
     if (a === "nav") { tab = el.dataset.tab; if (tab === "add") { investOn = false; investPct = 10; } render(); return; }
+    if (a === "chart-range") { chartRange = el.dataset.range; renderCharts(); return; }
     if (a === "close-modal") { closeSheet(); return; }
     if (a === "settings") { openSettings(); return; }
 

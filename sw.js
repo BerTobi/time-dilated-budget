@@ -1,5 +1,5 @@
 /* Flow — Time-Dilated Budget · offline service worker */
-const CACHE = "flow-tdbs-v7";
+const CACHE = "flow-tdbs-v8";
 const ASSETS = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", (e) => {
@@ -20,9 +20,18 @@ self.addEventListener("fetch", (e) => {
   const req = e.request;
   if (req.method !== "GET") return;
   const url = new URL(req.url);
-  // Let cross-origin requests (e.g. the ExchangeRate-API) go straight to the network;
-  // the app caches rates itself in localStorage and degrades gracefully when offline.
-  if (url.origin !== location.origin) return;
+  // Cache the Chart.js library (CDN) so the Charts screen works offline after the first load.
+  if (url.origin !== location.origin) {
+    if (url.hostname === "cdn.jsdelivr.net") {
+      e.respondWith(caches.match(req).then((c) => c || fetch(req).then((res) => {
+        if (res && res.ok) { const cp = res.clone(); caches.open(CACHE).then((ch) => ch.put(req, cp)); }
+        return res;
+      })));
+    }
+    // Other cross-origin (e.g. ExchangeRate-API, Google Drive) go straight to the network;
+    // the app caches rates in localStorage and degrades gracefully when offline.
+    return;
+  }
 
   // Cache-first for the app shell, refreshing the cache in the background; fall back to the
   // cached index.html for navigations when fully offline.
