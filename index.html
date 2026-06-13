@@ -303,6 +303,8 @@
   .goal .name { font-size: 17px; font-weight: 800; letter-spacing: -.3px; }
   .goal .nums { font-size: 14px; font-weight: 700; color: var(--muted); white-space: nowrap; }
   .goal .nums b { color: var(--text); }
+  .goal-pct { font-size: 12px; font-weight: 800; color: var(--goal-2); background: var(--goal-soft); padding: 2px 8px; border-radius: 99px; vertical-align: middle; margin-left: 4px; }
+  .goal-pct.done { color: #059669; background: #dcfce7; }
   .goal .bar { height: 9px; border-radius: 99px; background: var(--bg-2); margin-top: 12px; overflow: hidden; }
   .goal .bar > i { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg,#fbbf24,#f59e0b); transition: width .4s; }
   .goal.full .bar > i { background: linear-gradient(90deg,#34d399,#10b981); }
@@ -1395,7 +1397,7 @@
           : `<div class="acts"><button class="linkbtn danger" data-action="cancel-goal" data-id="${g.id}">Cancel goal</button></div>`;
         return `
         <div class="goal ${full ? "full" : ""}">
-          <div class="row1"><div class="name">${esc(g.name)}</div><div class="nums"><b>${fmtAmt(g.balance, g.cur)}</b> / ${fmtAmt(g.target, g.cur)}</div></div>
+          <div class="row1"><div class="name">${esc(g.name)} <span class="goal-pct ${full ? "done" : ""}">${Math.round(pct)}%</span></div><div class="nums"><b>${fmtAmt(g.balance, g.cur)}</b> / ${fmtAmt(g.target, g.cur)}</div></div>
           ${cl ? `<div class="bal-conv">${cl}</div>` : ""}
           <div class="bar"><i style="width:${pct}%"></i></div>
           ${ratioRow}
