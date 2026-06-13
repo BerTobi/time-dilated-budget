@@ -240,6 +240,13 @@
   .hday .sub { font-size: 12.5px; color: var(--muted); margin-top: 3px; }
   .hday .bar { height: 6px; border-radius: 99px; background: var(--bg-2); margin-top: 10px; overflow: hidden; }
   .hday .bar > i { display: block; height: 100%; border-radius: 99px; }
+  .hday { cursor: pointer; }
+  .hday .hday-caret { font-size: 11px; color: var(--faint); display: inline-block; transition: transform .2s; }
+  .hday.open .hday-caret { transform: rotate(180deg); }
+  .hday-exps { margin-top: 10px; padding-top: 4px; border-top: 1px solid var(--border); }
+  .hday-empty { margin-top: 12px; font-size: 12.5px; color: var(--muted); text-align: center; }
+  .impact-note { font-size: 12.5px; color: var(--invest-2); background: var(--invest-soft); border-radius: 10px; padding: 9px 12px; margin: 2px 0 8px; line-height: 1.45; }
+  .impact-note b { font-weight: 800; }
 
   /* ---------- Expense rows ---------- */
   .exp { display: flex; align-items: center; gap: 12px; padding: 12px 4px; border-bottom: 1px solid var(--border); }
@@ -442,6 +449,8 @@
   let goalOverrideOn = false;
   let investOn = false;     // "invest on arrival" toggle on the Add-income form
   let investPct = 10;
+  let historyOpen = null;   // which History day is expanded
+  let lastLoggedId = null;  // most recently logged expense, for the daily-impact note
   // Google Drive sync
   const GOOGLE_CLIENT_ID = "826457931451-825v8i9ab5q8m57qrdirdchq69477bem.apps.googleusercontent.com";
   let gToken = null, gTokenExpiry = 0, gTokenClient = null, gTokenResolve = null;
@@ -723,7 +732,7 @@
       cur = addDays(cur, 1);
       state.currentDate = fmtISO(cur);
       expirePools(cur);              // run the day's expiry sweeps before snapshotting the investment balance
-      state.history.unshift({ date: finalized, spent: spent, allowance: allowance, saved: saved, cur: d, pools: poolsSnap, goals: goalsSnap, invest: investTotalValue(d) });
+      state.history.unshift({ date: finalized, spent: spent, allowance: allowance, saved: saved, cur: d, pools: poolsSnap, goals: goalsSnap, invest: investTotalValue(d), expenses: state.todayExpenses.slice() });
       if (state.history.length > 1200) state.history.length = 1200;
       state.todayExpenses = [];
       state.spendDebits = [];        // the day's spend is settled and permanent
@@ -775,6 +784,30 @@
     save();
   }
   // Direct contribution into the investment pool (e.g. "invest on arrival" when adding income).
+  // Effective remaining runway in days = spend-free total balance ÷ today's allowance. This is the
+  // balance-weighted horizon used to amortize a one-off expense across active pool days.
+  function effectiveRemainingDays() {
+    const d = dispCur();
+    const debit = {};
+    (state.spendDebits || []).forEach(x => { if (x.id !== "inv") debit[x.id] = (debit[x.id] || 0) + x.amount; });
+    const grossBal = state.pools.reduce((a, p) => a + convert(p.balance + (debit[p.id] || 0), p.cur, d), 0);
+    const allow = state.todayAllowance || totalAllowance();
+    return allow > 1e-9 ? grossBal / allow : 0;
+  }
+  // The gentle "amortized daily impact" note shown after logging an expense.
+  function impactNote(e) {
+    const d = dispCur();
+    const days = effectiveRemainingDays();
+    if (days < 1 || !state.pools.length) return "";
+    const spent = todaySpent(), allow = state.todayAllowance || 0;
+    if (spent > allow + 1e-6) {
+      const deficit = spent - allow;
+      return `Today's <b>${money(deficit)}</b> deficit will be absorbed across your pools — daily impact <b>−${money(deficit / days)}/day</b> over ~${Math.round(days)} days.`;
+    }
+    const x = convert(e.amount, e.cur, d);
+    return `This <b>${fmtAmt(e.amount, e.cur)}</b> expense trims your daily allowance by about <b>${money(x / days)}/day</b> across your ~${Math.round(days)}-day runway.`;
+  }
+
   // ---- Investment sources ----
   function defaultSource() {
     const list = state.investmentSources || [];
@@ -1030,13 +1063,14 @@
     if (state.todayExpenses.length) {
       exp = state.todayExpenses.map(e => {
         const cl = convLine(e.amount, e.cur);
+        const note = (e.id === lastLoggedId) ? impactNote(e) : "";
         return `
         <div class="exp">
           <div class="dot">${curSym(e.cur)}</div>
           <div class="info"><div class="t">${esc(e.note) || "Expense"}</div><div class="s">${e.time}${cl ? " · " + cl : ""}</div></div>
           <div class="amt">-${fmtAmt(e.amount, e.cur).replace(/^-/, "")}</div>
           <button class="x" data-action="del-expense" data-id="${e.id}">${svg("x")}</button>
-        </div>`;
+        </div>${note ? `<div class="impact-note">${note}</div>` : ""}`;
       }).join("");
       exp = `<div class="section-title">Today's expenses</div><div class="card" style="padding:6px 16px">${exp}</div>`;
     }
@@ -1281,11 +1315,27 @@
         const pct = allowance > 0 ? Math.min(100, (spent / allowance) * 100) : 0;
         const over = spent > allowance + 1e-6;
         const col = over ? "var(--danger)" : "linear-gradient(90deg,#34d399,#10b981)";
+        const open = historyOpen === h.date;
+        const exps = h.expenses || [];
+        let detail = "";
+        if (open) {
+          detail = exps.length
+            ? `<div class="hday-exps">` + exps.map(e => {
+                const ec = e.cur || hc; const cl = convLine(e.amount, ec);
+                return `<div class="exp" style="border-color:var(--border)">
+                  <div class="dot">${curSym(ec)}</div>
+                  <div class="info"><div class="t">${esc(e.note) || "Expense"}</div><div class="s">${e.time || ""}${cl ? " · " + cl : ""}</div></div>
+                  <div class="amt">-${fmtAmt(e.amount, ec).replace(/^-/, "")}</div>
+                </div>`;
+              }).join("") + `</div>`
+            : `<div class="hday-empty">No expenses logged — the full allowance repooled${saved > 1e-9 ? " & funded goals" : ""}.</div>`;
+        }
         return `
-        <div class="hday">
-          <div class="top"><div class="date">${fmtDayMonth(parseISO(h.date))}</div><div class="spent">${money(spent)}</div></div>
+        <div class="hday ${open ? "open" : ""}" data-action="toggle-day" data-date="${h.date}">
+          <div class="top"><div class="date">${fmtDayMonth(parseISO(h.date))} <span class="hday-caret">▾</span></div><div class="spent">${money(spent)}</div></div>
           <div class="sub">${money(allowance)} allowance · ${over ? "over by " + money(spent - allowance) : money(allowance - spent) + " under"}${saved > 1e-9 ? " · " + money(saved) + " → goals" : ""}</div>
           <div class="bar"><i style="width:${pct}%;background:${col}"></i></div>
+          ${detail}
         </div>`;
       }).join("");
     }
@@ -1807,7 +1857,7 @@
     if (!el) return;
     const a = el.dataset.action;
 
-    if (a === "nav") { tab = el.dataset.tab; if (tab === "add") { investOn = false; investPct = 10; } render(); return; }
+    if (a === "nav") { tab = el.dataset.tab; if (tab === "add") { investOn = false; investPct = 10; } lastLoggedId = null; render(); return; }
     if (a === "chart-range") { chartRange = el.dataset.range; renderCharts(); return; }
     if (a === "close-modal") { closeSheet(); return; }
     if (a === "settings") { openSettings(); return; }
@@ -1816,9 +1866,12 @@
     if (a === "save-expense") {
       const amt = num("exp-amt");
       if (!(amt > 0)) { shake("exp-amt"); return; }
-      addExpense(amt, val("exp-note"), val("exp-cur")); closeSheet(); render(); return;
+      addExpense(amt, val("exp-note"), val("exp-cur"));
+      lastLoggedId = (state.todayExpenses[0] || {}).id;   // show the daily-impact note under it
+      tab = "home"; closeSheet(); render(); return;
     }
-    if (a === "del-expense") { removeExpense(el.dataset.id); render(); return; }
+    if (a === "del-expense") { if (el.dataset.id === lastLoggedId) lastLoggedId = null; removeExpense(el.dataset.id); render(); return; }
+    if (a === "toggle-day") { historyOpen = (historyOpen === el.dataset.date) ? null : el.dataset.date; render(); return; }
 
     if (a === "addmode") { addMode = el.dataset.mode; renderAdd(); return; }
     if (a === "create-pool") {
