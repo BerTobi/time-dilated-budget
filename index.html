@@ -656,40 +656,65 @@
   // Pull `amountDisp` (display currency) from pools SHORTEST-horizon-first, then the investment
   // pool once pools are exhausted. Records each native debit into `log` so it can be reversed.
   // Anything left uncovered (fully overdrawn) is simply unbacked.
-  function pullSpend(amountDisp, log) {
+  // Settle `amountDisp` of spending in three tiers:
+  //   1. the Currently Available buffer;
+  //   2. today's daily allowance — drawn PROPORTIONALLY to each pool's contribution, which keeps
+  //      future allowance flat (the repool steady state) and just leaves less to save that night;
+  //   3. anything beyond CA + allowance digs into pool PRINCIPAL, shortest-horizon-first (then the
+  //      investment pool), reducing future allowance. Those debits are tagged `prin` so only this
+  //      tier surfaces the "drawn from your pools" warning.
+  function settleSpend(amountDisp, allowanceDisp, ref, log) {
     if (amountDisp <= 1e-9) return;
     const d = dispCur();
     let rem = amountDisp;
-    if (state.available && state.available.balance > 1e-9) {   // spend the Currently Available buffer first
+    if (state.available && state.available.balance > 1e-9) {
       const avDisp = convert(state.available.balance, state.available.cur, d);
       const take = Math.min(avDisp, rem);
       if (take > 1e-9) {
-        const takeNative = convert(take, d, state.available.cur);
-        state.available.balance -= takeNative; if (state.available.balance < 1e-9) state.available.balance = 0;
-        log.push({ id: "avail", amount: takeNative });
+        const n = convert(take, d, state.available.cur);
+        state.available.balance -= n; if (state.available.balance < 1e-9) state.available.balance = 0;
+        log.push({ id: "avail", amount: n });
         rem -= take;
       }
     }
+    if (rem <= 1e-9) return;
+    const allowancePart = Math.min(rem, Math.max(0, allowanceDisp || 0));
+    if (allowancePart > 1e-9) {
+      const live = state.pools.filter(p => p.balance > 1e-9);
+      let basis = live.map(p => convert(contribution(p, ref), p.cur, d));
+      let tot = basis.reduce((a, b) => a + b, 0);
+      if (tot <= 1e-9) { basis = live.map(p => convert(p.balance, p.cur, d)); tot = basis.reduce((a, b) => a + b, 0); }
+      if (tot > 1e-9) {
+        live.forEach((p, i) => {
+          const takeDisp = Math.min(convert(p.balance, p.cur, d), allowancePart * (basis[i] / tot));
+          const n = convert(takeDisp, d, p.cur);
+          p.balance -= n; if (p.balance < 1e-9) p.balance = 0;
+          log.push({ id: p.id, amount: n });
+        });
+      }
+      rem -= allowancePart;
+    }
+    if (rem <= 1e-9) return;
     const order = state.pools.slice().sort((a, b) => parseISO(a.endDate) - parseISO(b.endDate));
     for (const p of order) {
       if (rem <= 1e-9) break;
       const balDisp = convert(p.balance, p.cur, d);
       if (balDisp <= 1e-9) continue;
       const takeDisp = Math.min(balDisp, rem);
-      const takeNative = convert(takeDisp, d, p.cur);
-      p.balance -= takeNative; if (p.balance < 1e-9) p.balance = 0;
-      log.push({ id: p.id, amount: takeNative });
+      const n = convert(takeDisp, d, p.cur);
+      p.balance -= n; if (p.balance < 1e-9) p.balance = 0;
+      log.push({ id: p.id, amount: n, prin: true });
       rem -= takeDisp;
     }
-    if (rem > 1e-9) {                                    // pools exhausted -> draw from the default investment source's value
+    if (rem > 1e-9) {
       const src = defaultSource();
       if (src) {
         const balDisp = convert(src.value, src.cur, d);
         const takeDisp = Math.min(balDisp, rem);
         if (takeDisp > 1e-9) {
-          const takeNative = convert(takeDisp, d, src.cur);
-          src.value -= takeNative; if (src.value < 1e-9) src.value = 0;
-          log.push({ id: "inv", src: src.id, amount: takeNative });
+          const n = convert(takeDisp, d, src.cur);
+          src.value -= n; if (src.value < 1e-9) src.value = 0;
+          log.push({ id: "inv", src: src.id, amount: n, prin: true });
         }
       }
     }
@@ -715,7 +740,7 @@
     reverseDebits(state.spendDebits);
     state.todayAllowance = totalAllowance();
     const spent = todaySpent();
-    if (spent > 1e-9) pullSpend(spent, state.spendDebits);
+    if (spent > 1e-9) settleSpend(spent, state.todayAllowance, todayDate(), state.spendDebits);
   }
 
   // ---- Currently Available buffer ----
@@ -765,12 +790,13 @@
     const d = dispCur();
     let X = 0, Y = 0;
     (state.spendDebits || []).forEach(x => {
-      if (x.id === "avail" || x.id === "inv") return;
+      if (!x.prin || x.id === "inv") return;   // only principal (beyond CA + allowance) draws warn
       const p = state.pools.find(pp => pp.id === x.id);
       if (p) { const amt = convert(x.amount, p.cur, d); X += amt; Y += amt / daysRemaining(p, todayDate()); }
     });
-    if (X <= 1e-6) return null;
-    return { X: X, Y: Y, Z: Y > 1e-9 ? Math.max(1, Math.round(X / Y)) : 0, inv: invDrawnDisplay() };
+    const invD = invDrawnDisplay();
+    if (X <= 1e-6 && invD <= 1e-6) return null;
+    return { X: X, Y: Y, Z: Y > 1e-9 ? Math.max(1, Math.round(X / Y)) : 0, inv: invD };
   }
   // Manual moves out of the buffer (capped at what's available).
   function caTake(amountDisp) {
@@ -802,10 +828,11 @@
       const poolsSnap = state.pools.map(p => ({ id: p.id, name: p.name, c: convert(contribution(p, cur), p.cur, d) }));
       // settle the day's spend permanently: Currently Available first, then pools (shortest), then investment
       const tmp = [];
-      pullSpend(spent, tmp);
-      const poolCover = tmp.reduce((a, x) => { if (x.id === "avail" || x.id === "inv") return a; const p = state.pools.find(pp => pp.id === x.id); return a + (p ? convert(x.amount, p.cur, d) : 0); }, 0);
-      // split the pools' UNSPENT allowance three ways: goals / Currently Available / repool (stays)
-      const leftover = Math.max(0, allowance - poolCover);
+      settleSpend(spent, allowance, cur, tmp);
+      const caCover = tmp.reduce((a, x) => a + (x.id === "avail" ? convert(x.amount, state.available.cur, d) : 0), 0);
+      const effectiveSpend = Math.max(0, spent - caCover);   // spend beyond the buffer
+      // split the UNSPENT daily allowance three ways: goals / Currently Available / repool (stays)
+      const leftover = Math.max(0, allowance - effectiveSpend);
       const gs = state.goalSplit || 0, as_ = state.availSplit || 0, rs = state.repoolSplit || 0, sum3 = gs + as_ + rs;
       const goalN = sum3 > 0 ? gs / sum3 : 0, availN = sum3 > 0 ? as_ / sum3 : 0;
       let saved = 0, goalsSnap = [], removed = 0;
