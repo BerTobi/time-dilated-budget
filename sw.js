@@ -1,5 +1,5 @@
 /* Flow — Time-Dilated Budget · offline service worker */
-const CACHE = "flow-tdbs-v14";
+const CACHE = "flow-tdbs-v15";
 const ASSETS = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", (e) => {

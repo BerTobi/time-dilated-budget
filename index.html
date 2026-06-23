@@ -1031,40 +1031,37 @@
     state.goals.push(g);
     if (state.goals.length === 1) { g.ratio = 100; save(); return; }   // sole goal owns 100%
     if (manualRatio == null) {
-      const e = 100 / state.goals.length;          // no ratio chosen -> split equally across all
-      state.goals.forEach(x => x.ratio = e);
+      // no manual value -> fill the gap up to 100% without touching the other goals' shares
+      const others = state.goals.reduce((a, x) => a + (x.id === g.id ? 0 : (x.ratio || 0)), 0);
+      g.ratio = Math.max(0, Math.round(100 - others));
     } else {
       g.ratio = Math.max(0, Math.min(100, manualRatio));
-      distributeRatioAmong(state.goals.filter(x => x.id !== g.id), 100 - g.ratio);
     }
     save();
   }
-  // Set one goal's ratio; the rest rebalance proportionally so the total stays 100%.
+  // Sets one goal's share. Shares are independent — the others are NOT rebalanced; the Goals
+  // screen warns if they don't total 100%. Funding still distributes proportionally to shares.
   function setGoalRatio(id, r) {
     const g = state.goals.find(x => x.id === id);
     if (!g) return;
     if (state.goals.length <= 1) { g.ratio = 100; save(); return; }
-    r = Math.max(0, Math.min(100, r));
-    g.ratio = r;
-    distributeRatioAmong(state.goals.filter(x => x.id !== id), 100 - r);
+    g.ratio = Math.max(0, Math.min(100, r));
     save();
   }
-  // Spend a completed goal: money is used and leaves the system; remaining ratios rebalance.
+  // Spend a completed goal: money is used and leaves the system. Other shares are left as-is.
   function spendGoal(id) {
     const i = state.goals.findIndex(g => g.id === id);
     if (i < 0) return;
     state.goals.splice(i, 1);
-    distributeRatioAmong(state.goals, 100);
     save();
   }
-  // Cancel a goal: rebalance remaining ratios, then redistribute its balance to the remaining
-  // goals proportionally by ratio (cascading when one fills); any overflow -> investment.
+  // Cancel a goal: redistribute its balance to the remaining goals proportionally by share
+  // (cascading when one fills); any overflow -> investment. Other shares are left as-is.
   function cancelGoal(id) {
     const i = state.goals.findIndex(g => g.id === id);
     if (i < 0) return;
     const g = state.goals[i];
     state.goals.splice(i, 1);
-    distributeRatioAmong(state.goals, 100);
     if (g.balance > 1e-9) {
       const d = dispCur();
       const res = distributeToGoals(convert(g.balance, g.cur, d), state.goals);   // pot in display cur
@@ -1478,8 +1475,8 @@
     const estLeft = estDailyLeftover();
     const totalSaved = goals.reduce((s, g) => s + convert(g.balance, g.cur, d), 0);
     const fills = estimatedFills();   // per-id deposits in display currency
-    const rints = goals.length ? pctRound(goals.map(g => g.ratio || 0)) : [];
     const single = goals.length <= 1;
+    const shareSum = goals.reduce((a, g) => a + Math.round(g.ratio || 0), 0);
 
     const head = `
       <div class="card split-card" style="margin-top:10px">
@@ -1500,7 +1497,7 @@
       list = goals.map((g, idx) => {
         const full = g.balance >= g.target - 1e-9;
         const pct = g.target > 0 ? Math.min(100, (g.balance / g.target) * 100) : 100;
-        const ri = rints[idx];
+        const ri = single ? 100 : Math.round(g.ratio || 0);
         const badge = full ? `<span class="badge ready">Ready to spend</span>` : "";
         const fillLine = full
           ? `<div class="rate" style="color:var(--accent-2)">🎉 Target reached</div>`
@@ -1527,7 +1524,8 @@
     }
 
     const hint = goals.length > 1
-      ? `<div style="font-size:12.5px;color:var(--muted);margin:0 4px 4px;text-align:center">Type a share — the others rebalance to keep the total at 100%.</div>`
+      ? `<div style="font-size:12.5px;color:var(--muted);margin:0 4px 4px;text-align:center">Set each goal's share of the goal-bound leftover.</div>
+         <div id="ratio-warn" style="text-align:center;font-weight:700;font-size:12.5px;margin:0 4px 6px">${ratioWarnHTML(shareSum)}</div>`
       : "";
 
     screen.innerHTML = `
@@ -1543,23 +1541,21 @@
     bindRatioInputs();
   }
 
-  // Live, no-commit preview as a goal's funding share is typed: the OTHER goals' inputs and
-  // the estimated fills update so the user always sees the shares totalling 100%.
+  function ratioWarnHTML(sum) {
+    const s = Math.round(sum);
+    return s === 100
+      ? `<span style="color:var(--accent-2)">Shares total 100% ✓</span>`
+      : `<span style="color:var(--danger)">Shares total ${s}% — should be 100%</span>`;
+  }
+  // Live, no-commit preview as a goal's funding share is typed: updates the total-shares warning
+  // and the estimated fills. Other goals' shares are left untouched (no auto-rebalance).
   function liveRebalance(changedId, newVal) {
-    newVal = Math.max(0, Math.min(100, parseFloat(newVal) || 0));
-    const others = state.goals.filter(g => g.id !== changedId);
-    const sOther = others.reduce((a, g) => a + (g.ratio || 0), 0);
-    const prov = {};
-    state.goals.forEach(g => {
-      if (g.id === changedId) prov[g.id] = newVal;
-      else prov[g.id] = sOther <= 1e-9 ? (100 - newVal) / Math.max(1, others.length) : (g.ratio || 0) * (100 - newVal) / sOther;
-    });
-    const rints = pctRound(state.goals.map(g => prov[g.id]));
-    state.goals.forEach((g, idx) => {
-      if (g.id !== changedId) { const inp = document.querySelector('.ratio-num[data-id="' + g.id + '"]'); if (inp && document.activeElement !== inp) inp.value = rints[idx]; }
-    });
+    const nv = Math.max(0, Math.min(100, parseFloat(newVal) || 0));
+    let sum = 0;
+    state.goals.forEach(g => { sum += g.id === changedId ? Math.round(nv) : Math.round(g.ratio || 0); });
+    const w = document.getElementById("ratio-warn"); if (w) w.innerHTML = ratioWarnHTML(sum);
     const d = dispCur();
-    const provGoals = state.goals.map(g => ({ id: g.id, balance: g.balance, target: g.target, ratio: prov[g.id], cur: g.cur }));
+    const provGoals = state.goals.map(g => ({ id: g.id, balance: g.balance, target: g.target, ratio: g.id === changedId ? nv : (g.ratio || 0), cur: g.cur }));
     const pot = estDailyLeftover() * goalShare();
     const dep = pot > 1e-9 ? distributeToGoals(pot, provGoals).dep : {};
     state.goals.forEach(g => { const fe = document.querySelector('.fill-est[data-id="' + g.id + '"]'); if (fe) fe.innerHTML = "~" + fmtAmt(convert(dep[g.id] || 0, d, g.cur), g.cur) + " <small>/ day</small>"; });
@@ -2269,13 +2265,11 @@
     if (typeof state.todayAllowance !== "number") state.todayAllowance = 0;
     if (typeof state.updatedAt !== "number") state.updatedAt = Date.now();
     if (!state.google || typeof state.google !== "object") state.google = { signedIn: false, fileId: null };
-    // goal ratios (from the priority rework)
+    // goal funding shares — seed equal whole-number shares only if missing; never auto-rebalance
     if (state.goals.length) {
       if (state.goals.some(g => typeof g.ratio !== "number")) {
-        const e = 100 / state.goals.length;
-        state.goals.forEach(g => g.ratio = e);
-      } else {
-        distributeRatioAmong(state.goals, 100);
+        const e = pctRound(state.goals.map(() => 100 / state.goals.length));
+        state.goals.forEach((g, i) => g.ratio = e[i]);
       }
       state.goals.forEach(g => { delete g.splitOverride; });
     }
