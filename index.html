@@ -312,10 +312,12 @@
   .goal .rate { font-size: 13.5px; color: var(--goal-2); font-weight: 700; }
   .goal .rate small { color: var(--muted); font-weight: 600; }
   .goal .ovr { font-size: 11.5px; color: var(--goal-2); font-weight: 700; margin-top: 6px; }
-  .ratio-row { display: flex; align-items: center; gap: 14px; margin-top: 14px; }
-  .ratio-row input[type="range"] { flex: 1; }
-  .ratio-row .ratio-val { font-size: 15px; font-weight: 800; color: var(--goal-2); min-width: 44px; text-align: right; }
-  .ratio-slider:disabled { opacity: .45; }
+  .ratio-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; }
+  .ratio-lbl { font-size: 13px; font-weight: 700; color: var(--muted); }
+  .ratio-input { display: inline-flex; align-items: center; gap: 3px; background: var(--bg-2); border-radius: 10px; padding: 7px 12px; font-weight: 800; color: var(--goal-2); }
+  .ratio-input input { width: 46px; border: none; background: transparent; font-size: 15px; font-weight: 800; color: var(--goal-2); text-align: right; outline: none; -moz-appearance: textfield; }
+  .ratio-input input::-webkit-outer-spin-button, .ratio-input input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  .ratio-input input:disabled { opacity: .5; }
   .goal .acts { display: flex; gap: 8px; margin-top: 14px; align-items: center; }
   .goal .acts .btn { padding: 13px; font-size: 14.5px; }
   .badge { font-size: 11px; font-weight: 800; padding: 5px 10px; border-radius: 99px; text-transform: uppercase; letter-spacing: .4px; white-space: nowrap; }
@@ -1506,8 +1508,8 @@
         const cl = canConvert(g.cur, d) ? "≈ " + fmtAmt(convert(g.balance, g.cur, d), d) + " / " + fmtAmt(convert(g.target, g.cur, d), d) + " " + d : "";
         const ratioRow = `
           <div class="ratio-row">
-            <input type="range" class="ratio-slider" data-id="${g.id}" min="0" max="100" value="${g.ratio || 0}" ${(full || single) ? "disabled" : ""} />
-            <span class="ratio-val" data-id="${g.id}">${ri}%</span>
+            <span class="ratio-lbl">Funding share</span>
+            <span class="ratio-input"><input type="number" class="ratio-num" data-id="${g.id}" min="0" max="100" step="1" inputmode="numeric" value="${ri}" ${(full || single) ? "disabled" : ""} />%</span>
           </div>`;
         const acts = full
           ? `<div class="acts"><button class="btn accent" data-action="spend-goal" data-id="${g.id}">${svg("check")} Spend &amp; complete</button><button class="linkbtn danger" data-action="cancel-goal" data-id="${g.id}">Cancel</button></div>`
@@ -1525,7 +1527,7 @@
     }
 
     const hint = goals.length > 1
-      ? `<div style="font-size:12.5px;color:var(--muted);margin:0 4px 4px;text-align:center">Drag a share slider — the others rebalance to keep the total at 100%.</div>`
+      ? `<div style="font-size:12.5px;color:var(--muted);margin:0 4px 4px;text-align:center">Type a share — the others rebalance to keep the total at 100%.</div>`
       : "";
 
     screen.innerHTML = `
@@ -1538,11 +1540,11 @@
         ${list}
       </div>
     `;
-    bindRatioSliders();
+    bindRatioInputs();
   }
 
-  // Live, no-commit rebalance while dragging a goal's ratio slider: the other goals'
-  // displayed shares + estimated fills update so the user always sees a total of 100%.
+  // Live, no-commit preview as a goal's funding share is typed: the OTHER goals' inputs and
+  // the estimated fills update so the user always sees the shares totalling 100%.
   function liveRebalance(changedId, newVal) {
     newVal = Math.max(0, Math.min(100, parseFloat(newVal) || 0));
     const others = state.goals.filter(g => g.id !== changedId);
@@ -1554,9 +1556,7 @@
     });
     const rints = pctRound(state.goals.map(g => prov[g.id]));
     state.goals.forEach((g, idx) => {
-      const valEl = document.querySelector('.ratio-val[data-id="' + g.id + '"]');
-      if (valEl) valEl.textContent = rints[idx] + "%";
-      if (g.id !== changedId) { const sl = document.querySelector('.ratio-slider[data-id="' + g.id + '"]'); if (sl) sl.value = prov[g.id]; }
+      if (g.id !== changedId) { const inp = document.querySelector('.ratio-num[data-id="' + g.id + '"]'); if (inp && document.activeElement !== inp) inp.value = rints[idx]; }
     });
     const d = dispCur();
     const provGoals = state.goals.map(g => ({ id: g.id, balance: g.balance, target: g.target, ratio: prov[g.id], cur: g.cur }));
@@ -1565,12 +1565,12 @@
     state.goals.forEach(g => { const fe = document.querySelector('.fill-est[data-id="' + g.id + '"]'); if (fe) fe.innerHTML = "~" + fmtAmt(convert(dep[g.id] || 0, d, g.cur), g.cur) + " <small>/ day</small>"; });
   }
 
-  function bindRatioSliders() {
-    document.querySelectorAll(".ratio-slider").forEach(sl => {
-      if (sl.disabled) return;
-      const id = sl.dataset.id;
-      sl.addEventListener("input", () => liveRebalance(id, sl.value));
-      sl.addEventListener("change", () => { setGoalRatio(id, parseFloat(sl.value) || 0); render(); });
+  function bindRatioInputs() {
+    document.querySelectorAll(".ratio-num").forEach(inp => {
+      if (inp.disabled) return;
+      const id = inp.dataset.id;
+      inp.addEventListener("input", () => liveRebalance(id, inp.value));
+      inp.addEventListener("change", () => { setGoalRatio(id, parseFloat(inp.value) || 0); render(); });
     });
   }
 
@@ -1948,10 +1948,6 @@
     `);
   }
 
-  function splitSlider(id, value) {
-    return `<input type="range" id="${id}" min="0" max="100" value="${value}" oninput="document.getElementById('${id}-val').textContent=this.value+'%'" />
-      <div style="text-align:center;font-weight:800;color:var(--goal-2);font-size:18px;margin-top:6px" id="${id}-val">${value}%</div>`;
-  }
   // Keep an amount field's currency symbol in sync with its currency selector.
   function bindCurSym(curId, symId, extra) {
     const sel = document.getElementById(curId), symEl = document.getElementById(symId);
@@ -1975,7 +1971,7 @@
       ${first ? "" : `
       <div class="field">
         <label class="check-row"><span>Set a custom funding share</span><input type="checkbox" id="g-ovr" ${goalOverrideOn ? "checked" : ""} /></label>
-        <div id="g-ovr-wrap" style="display:${goalOverrideOn ? "block" : "none"};margin-top:10px">${splitSlider("g-split", eq)}</div>
+        <div id="g-ovr-wrap" style="display:${goalOverrideOn ? "block" : "none"};margin-top:10px"><label class="ratio-lbl">Share of goal-bound leftover</label> <span class="ratio-input"><input type="number" id="g-split" min="0" max="100" step="1" inputmode="numeric" value="${eq}" />%</span></div>
       </div>`}
       <div class="preview" style="background:var(--goal-soft);color:var(--goal-2)">${first
         ? "Your first goal receives 100% of the goal-bound leftover."
@@ -1991,10 +1987,10 @@
     openSheet(`
       <h2>Leftover split</h2>
       <div class="chart-note" style="margin:0 0 12px">Each day, your unspent allowance is divided three ways. These should add up to 100%.</div>
-      <div class="field"><label>To goals</label>${splitSlider("gs-range", state.goalSplit || 0)}</div>
-      <div class="field"><label>To Currently Available</label>${splitSlider("av-range", state.availSplit || 0)}</div>
-      <div class="field"><label>Repooled (stays in pools)</label>${splitSlider("rp-range", state.repoolSplit || 0)}</div>
-      <div id="split-sum" style="text-align:center;font-weight:800;margin:2px 0 14px"></div>
+      <div class="ratio-row"><span class="ratio-lbl">To goals</span><span class="ratio-input"><input type="number" id="gs-range" min="0" max="100" step="1" inputmode="numeric" value="${state.goalSplit || 0}" />%</span></div>
+      <div class="ratio-row"><span class="ratio-lbl">To Currently Available</span><span class="ratio-input"><input type="number" id="av-range" min="0" max="100" step="1" inputmode="numeric" value="${state.availSplit || 0}" />%</span></div>
+      <div class="ratio-row"><span class="ratio-lbl">Repooled (stays in pools)</span><span class="ratio-input"><input type="number" id="rp-range" min="0" max="100" step="1" inputmode="numeric" value="${state.repoolSplit || 0}" />%</span></div>
+      <div id="split-sum" style="text-align:center;font-weight:800;margin:14px 0"></div>
       <button class="btn goal" data-action="save-split">Save</button>`);
     const upd = () => {
       const sum = ["gs-range", "av-range", "rp-range"].reduce((a, id) => { const e = document.getElementById(id); return a + (e ? (parseInt(e.value, 10) || 0) : 0); }, 0);
