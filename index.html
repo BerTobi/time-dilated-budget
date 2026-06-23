@@ -745,6 +745,19 @@
 
   // ---- Currently Available buffer ----
   function caAvailableDisplay() { return state.available ? convert(state.available.balance, state.available.cur, dispCur()) : 0; }
+  function caSpentTodayDisplay() {
+    const d = dispCur(), c = state.available ? state.available.cur : d;
+    return (state.spendDebits || []).reduce((a, x) => a + (x.id === "avail" ? convert(x.amount, c, d) : 0), 0);
+  }
+  // The headline "Currently available" figure: the buffer plus whatever's left of today's
+  // allowance — i.e. what you can spend today before digging into pool principal. Purely a
+  // display roll-up; the buffer and allowance still work independently behind the scenes.
+  function spendableToday() {
+    const caBal = caAvailableDisplay();
+    const eff = Math.max(0, todaySpent() - caSpentTodayDisplay());   // spend that went past the buffer
+    const allow = Math.max(0, (state.todayAllowance || 0) - eff);
+    return { caBal: caBal, allow: allow, total: caBal + allow };
+  }
   function avgPoolBalance(d) { d = d || dispCur(); const ps = state.pools || []; if (!ps.length) return Infinity; return ps.reduce((a, p) => a + convert(p.balance, p.cur, d), 0) / ps.length; }
   // Spread an amount back into the pools, proportional to balance (used by the cap overflow).
   function addToPools(amountDisp, d) {
@@ -1172,10 +1185,9 @@
     const d = dispCur();
     const allowance = state.todayAllowance || 0;
     const spent = todaySpent();
-    const caDisp = caAvailableDisplay();
-    const cap = avgPoolBalance(d);
-    const capped = isFinite(cap) && cap > 0;
-    const [cai, cac] = moneyParts(caDisp);
+    const sp = spendableToday();
+    const startBudget = sp.total + spent;   // today's no-consequence budget at the start of the day
+    const [cai, cac] = moneyParts(sp.total);
     const dateLine = new Date().toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
     const noPools = state.pools.length === 0;
     const draw = poolDrawMessage();
@@ -1201,8 +1213,8 @@
       <div class="hero fade-in" data-action="nav" data-tab="available" style="cursor:pointer">
         <div class="label">Currently available</div>
         <div class="big">${cai}<span class="cents">${cac}</span></div>
-        <div class="sub">${noPools ? "Add income to begin" : "spendable right now · tap to manage"}</div>
-        ${capped ? `<div class="progress"><i style="width:${Math.min(100, caDisp / cap * 100)}%"></i></div>` : ""}
+        <div class="sub">${noPools ? "Add income to begin" : money(sp.caBal) + " buffer + " + money(sp.allow) + " allowance · tap to manage"}</div>
+        ${startBudget > 0 ? `<div class="progress"><i style="width:${Math.min(100, sp.total / startBudget * 100)}%"></i></div>` : ""}
       </div>
 
       <div class="tiles">
@@ -1225,21 +1237,26 @@
     const d = dispCur();
     const caDisp = caAvailableDisplay();
     const cap = avgPoolBalance(d);
-    const [bi, bc] = moneyParts(caDisp);
+    const sp = spendableToday();
+    const [bi, bc] = moneyParts(sp.total);
     const capLine = isFinite(cap)
-      ? `Capped at ${money(cap)} — the average balance of your ${state.pools.length} active pool${state.pools.length > 1 ? "s" : ""}.`
+      ? `Buffer capped at ${money(cap)} — the average balance of your ${state.pools.length} active pool${state.pools.length > 1 ? "s" : ""}.`
       : "No active pools yet, so no cap applies.";
     screen.innerHTML = `
-      ${topbar("Short-term buffer", "Currently Available", false, "home")}
+      ${topbar("Spendable today", "Currently Available", false, "home")}
       <div class="hero fade-in">
         <div class="label">Available to spend now</div>
         <div class="big">${bi}<span class="cents">${bc}</span></div>
-        <div class="sub">${capLine}</div>
-        ${isFinite(cap) && cap > 0 ? `<div class="progress"><i style="width:${Math.min(100, caDisp / cap * 100)}%"></i></div>` : ""}
+        <div class="sub">${money(sp.caBal)} buffer + ${money(sp.allow)} of today's allowance</div>
       </div>
       <div class="pad" style="margin-top:16px">
-        <div class="chart-note" style="margin-bottom:12px">Spending draws from here first, before your pools. Each day this buffer receives <b>${state.availSplit || 0}%</b> of your unspent allowance (set in Settings).</div>
-        <div class="section-title">Move money out</div>
+        <div class="card" style="margin-bottom:14px">
+          <div class="trow"><span>Buffer (carries over)</span><b>${money(sp.caBal)}</b></div>
+          <div class="trow"><span>Today's allowance left</span><b>${money(sp.allow)}</b></div>
+          <div class="chart-note" style="margin-top:8px">${capLine} Spending draws from the buffer first, then today's allowance, then your pools. The buffer fills nightly with <b>${state.availSplit || 0}%</b> of unspent allowance (set in Settings).</div>
+        </div>
+        <div class="section-title">Move buffer money out</div>
+        <div class="chart-note" style="margin-bottom:10px">Moves come out of your <b>${money(caDisp)}</b> buffer — today's allowance can't be moved.</div>
         <button class="btn ghost" data-action="ca-to-pool" ${caDisp <= 1e-9 ? "disabled" : ""} style="margin-bottom:10px">${svg("pools")} Add to a pool</button>
         <button class="btn ghost" data-action="ca-to-goals" ${caDisp <= 1e-9 ? "disabled" : ""} style="margin-bottom:10px">${svg("target")} Add to goals</button>
         <button class="btn ghost" data-action="ca-to-invest" ${caDisp <= 1e-9 ? "disabled" : ""}>${svg("lock")} Add to investment</button>
@@ -1719,7 +1736,7 @@
         + card("Daily allowance trend", "ch-allowance", "Rises as you underspend; dips after heavy days or pool expiries")
         + (hasPools ? card("Pool contributions", "ch-pools", "Each pool's share of the allowance — pools fade out as they end") : "")
         + (hasGoals ? card("Goal contributions", "ch-goals", "Money flowing into each goal per day") : "")
-        + card("Currently available", "ch-avail", "Your short-term spending buffer over time")
+        + card("Currently available buffer", "ch-avail", "Your short-term buffer balance over time (excludes the daily allowance)")
         + card("Investment growth", "ch-invest", "Fed by arrival splits and pool-expiry sweeps");
       if (sources.length) {
         body += `<div class="section-title">Investment sources</div>`
