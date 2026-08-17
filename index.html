@@ -450,6 +450,7 @@
   let addMode = "duration"; // or "date"
   let liqMode = "duration";
   let liqSourceId = null;   // which investment source a liquidation draws from
+  let deploySourceId = null;   // which source a buffer deploy targets
   let goalOverrideOn = false;
   let investOn = false;     // "invest on arrival" toggle on the Add-income form
   let investPct = 10;
@@ -646,7 +647,7 @@
           target.balance += incoming;
         }
       } else {
-        contributeToInvestment(p.balance, p.cur, p.name);   // no surviving pool -> straight to the default investment source
+        contributeToInvestment(p.balance, p.cur, p.name);   // no surviving pool -> into the investment buffer
       }
     }
     state.pools = survivors;
@@ -656,28 +657,18 @@
   // Pull `amountDisp` (display currency) from pools SHORTEST-horizon-first, then the investment
   // pool once pools are exhausted. Records each native debit into `log` so it can be reversed.
   // Anything left uncovered (fully overdrawn) is simply unbacked.
-  // Settle `amountDisp` of spending in three tiers:
-  //   1. the Currently Available buffer;
-  //   2. today's daily allowance — drawn PROPORTIONALLY to each pool's contribution, which keeps
-  //      future allowance flat (the repool steady state) and just leaves less to save that night;
-  //   3. anything beyond CA + allowance digs into pool PRINCIPAL, shortest-horizon-first (then the
-  //      investment pool), reducing future allowance. Those debits are tagged `prin` so only this
-  //      tier surfaces the "drawn from your pools" warning.
+  // Settle `amountDisp` of spending, absorbing it in order:
+  //   1. today's daily allowance — drawn PROPORTIONALLY to each pool's contribution, which keeps
+  //      future allowance flat and just leaves less to save that night;
+  //   2. the Currently Available buffer;
+  //   3. anything beyond allowance + CA digs into pool PRINCIPAL, shortest-horizon-first, reducing
+  //      future allowance (these debits are tagged `prin`, surfacing the "drawn from your pools"
+  //      note); then, as a last resort, the Investment Buffer, then the default investment source.
   function settleSpend(amountDisp, allowanceDisp, ref, log) {
     if (amountDisp <= 1e-9) return;
     const d = dispCur();
     let rem = amountDisp;
-    if (state.available && state.available.balance > 1e-9) {
-      const avDisp = convert(state.available.balance, state.available.cur, d);
-      const take = Math.min(avDisp, rem);
-      if (take > 1e-9) {
-        const n = convert(take, d, state.available.cur);
-        state.available.balance -= n; if (state.available.balance < 1e-9) state.available.balance = 0;
-        log.push({ id: "avail", amount: n });
-        rem -= take;
-      }
-    }
-    if (rem <= 1e-9) return;
+    // 1) daily allowance — proportional across pools
     const allowancePart = Math.min(rem, Math.max(0, allowanceDisp || 0));
     if (allowancePart > 1e-9) {
       const live = state.pools.filter(p => p.balance > 1e-9);
@@ -695,6 +686,19 @@
       rem -= allowancePart;
     }
     if (rem <= 1e-9) return;
+    // 2) Currently Available buffer
+    if (state.available && state.available.balance > 1e-9) {
+      const avDisp = convert(state.available.balance, state.available.cur, d);
+      const take = Math.min(avDisp, rem);
+      if (take > 1e-9) {
+        const n = convert(take, d, state.available.cur);
+        state.available.balance -= n; if (state.available.balance < 1e-9) state.available.balance = 0;
+        log.push({ id: "avail", amount: n });
+        rem -= take;
+      }
+    }
+    if (rem <= 1e-9) return;
+    // 3) pool principal, shortest-horizon-first (reduces future allowance)
     const order = state.pools.slice().sort((a, b) => parseISO(a.endDate) - parseISO(b.endDate));
     for (const p of order) {
       if (rem <= 1e-9) break;
@@ -706,16 +710,28 @@
       log.push({ id: p.id, amount: n, prin: true });
       rem -= takeDisp;
     }
-    if (rem > 1e-9) {
-      const src = defaultSource();
-      if (src) {
-        const balDisp = convert(src.value, src.cur, d);
-        const takeDisp = Math.min(balDisp, rem);
-        if (takeDisp > 1e-9) {
-          const n = convert(takeDisp, d, src.cur);
-          src.value -= n; if (src.value < 1e-9) src.value = 0;
-          log.push({ id: "inv", src: src.id, amount: n, prin: true });
-        }
+    if (rem <= 1e-9) return;
+    // 4) last resort: the Investment Buffer (pending deployment), before committed sources
+    if (state.investmentBuffer && state.investmentBuffer.balance > 1e-9) {
+      const bufDisp = convert(state.investmentBuffer.balance, state.investmentBuffer.cur, d);
+      const take = Math.min(bufDisp, rem);
+      if (take > 1e-9) {
+        const n = convert(take, d, state.investmentBuffer.cur);
+        state.investmentBuffer.balance -= n; if (state.investmentBuffer.balance < 1e-9) state.investmentBuffer.balance = 0;
+        log.push({ id: "buf", amount: n, prin: true });
+        rem -= take;
+      }
+    }
+    if (rem <= 1e-9) return;
+    // 5) default investment source
+    const src = defaultSource();
+    if (src) {
+      const balDisp = convert(src.value, src.cur, d);
+      const takeDisp = Math.min(balDisp, rem);
+      if (takeDisp > 1e-9) {
+        const n = convert(takeDisp, d, src.cur);
+        src.value -= n; if (src.value < 1e-9) src.value = 0;
+        log.push({ id: "inv", src: src.id, amount: n, prin: true });
       }
     }
   }
@@ -727,6 +743,7 @@
     for (let i = log.length - 1; i >= 0; i--) {
       const dbt = log[i];
       if (dbt.id === "avail") { if (state.available) state.available.balance += dbt.amount; }
+      else if (dbt.id === "buf") { if (state.investmentBuffer) state.investmentBuffer.balance += dbt.amount; }
       else if (dbt.id === "inv") { const s = (state.investmentSources || []).find(x => x.id === dbt.src); if (s) s.value += dbt.amount; }
       else { const p = state.pools.find(x => x.id === dbt.id); if (p) p.balance += dbt.amount; }
     }
@@ -790,13 +807,13 @@
     state.available.balance -= convert(excess, d, state.available.cur);
     if (state.available.balance < 1e-9) state.available.balance = 0;
     const gs = state.goalSplit || 0, rs = state.repoolSplit || 0, denom = gs + rs;
-    let toGoals = denom > 0 ? excess * (gs / denom) : 0, toPools = excess - toGoals;
+    let toGoals = denom > 0 ? excess * (gs / denom) : 0, toBuffer = excess - toGoals;
     if (state.goals.length && toGoals > 1e-9) {
       const res = distributeToGoals(toGoals, state.goals);
       state.goals.forEach(g => { if (res.dep[g.id]) g.balance += convert(res.dep[g.id], d, g.cur); });
-      toPools += (toGoals - res.placed);
-    } else { toPools += toGoals; }
-    addToPools(toPools, d);
+      toBuffer += (toGoals - res.placed);
+    } else { toBuffer += toGoals; }
+    if (toBuffer > 1e-9 && state.investmentBuffer) state.investmentBuffer.balance += convert(toBuffer, d, state.investmentBuffer.cur);
   }
   // Message when an expense spills past the buffer into pools (rough allowance impact).
   function poolDrawMessage() {
@@ -844,10 +861,10 @@
       settleSpend(spent, allowance, cur, tmp);
       const caCover = tmp.reduce((a, x) => a + (x.id === "avail" ? convert(x.amount, state.available.cur, d) : 0), 0);
       const effectiveSpend = Math.max(0, spent - caCover);   // spend beyond the buffer
-      // split the UNSPENT daily allowance three ways: goals / Currently Available / repool (stays)
+      // split the UNSPENT daily allowance three ways: goals / Currently Available / Investment Buffer
       const leftover = Math.max(0, allowance - effectiveSpend);
       const gs = state.goalSplit || 0, as_ = state.availSplit || 0, rs = state.repoolSplit || 0, sum3 = gs + as_ + rs;
-      const goalN = sum3 > 0 ? gs / sum3 : 0, availN = sum3 > 0 ? as_ / sum3 : 0;
+      const goalN = sum3 > 0 ? gs / sum3 : 0, availN = sum3 > 0 ? as_ / sum3 : 0, bufN = sum3 > 0 ? rs / sum3 : 0;
       let saved = 0, goalsSnap = [], removed = 0;
       if (state.goals.length && leftover * goalN > 1e-9) {
         const res = distributeToGoals(leftover * goalN, state.goals);
@@ -857,13 +874,15 @@
       }
       const availAmt = leftover * availN;
       if (availAmt > 1e-9 && state.available) { state.available.balance += convert(availAmt, d, state.available.cur); removed += availAmt; }
-      deductSpending(removed, cur);   // pull the goal + available shares out of the pools (rest repools/stays)
-      applyCACap(d);                  // cap the buffer; excess flows back through goals + repool
+      const bufAmt = leftover * bufN;
+      if (bufAmt > 1e-9 && state.investmentBuffer) { state.investmentBuffer.balance += convert(bufAmt, d, state.investmentBuffer.cur); removed += bufAmt; }
+      deductSpending(removed, cur);   // pull the goal + available + buffer shares out of the pools
+      applyCACap(d);                  // cap the Currently Available buffer; excess flows to goals + buffer
       const finalized = state.currentDate;
       cur = addDays(cur, 1);
       state.currentDate = fmtISO(cur);
       expirePools(cur);              // run the day's expiry sweeps before snapshotting the investment balance
-      state.history.unshift({ date: finalized, spent: spent, allowance: allowance, saved: saved, cur: d, pools: poolsSnap, goals: goalsSnap, invest: investTotalValue(d), avail: caAvailableDisplay(), expenses: state.todayExpenses.slice() });
+      state.history.unshift({ date: finalized, spent: spent, allowance: allowance, saved: saved, cur: d, pools: poolsSnap, goals: goalsSnap, invest: investTotalValue(d), avail: caAvailableDisplay(), buf: bufferDisplay(), expenses: state.todayExpenses.slice() });
       if (state.history.length > 1200) state.history.length = 1200;
       state.todayExpenses = [];
       state.spendDebits = [];        // the day's spend is settled and permanent
@@ -943,14 +962,30 @@
   function investTotalContributed(code) { const d = code || dispCur(); return (state.investmentSources || []).reduce((a, s) => a + convert(s.contributed || 0, s.cur, d), 0); }
   // All inflows (arrival splits, expiry surpluses, goal overflow) land in the default source,
   // raising BOTH its total invested (cost basis) and its current value by the cash amount.
+  // All investment-bound money (on-arrival splits, expiry surpluses, manual "add to investment")
+  // now accumulates in the Investment Buffer — a universal holding pool pending deployment. It
+  // never contributes to daily allowance. Money only leaves it via an explicit deploy.
   function contributeToInvestment(amount, cur, fromLabel) {
-    const src = defaultSource();
+    const buf = state.investmentBuffer;
+    if (!buf) return;
+    buf.balance += convert(amount, cur, buf.cur);
+  }
+  function bufferDisplay() { return state.investmentBuffer ? convert(state.investmentBuffer.balance, state.investmentBuffer.cur, dispCur()) : 0; }
+  // Move an amount from the buffer into a chosen source, recorded as a contribution (raises the
+  // source's invested total AND current value, and logs a surplus for its chart).
+  function deployBuffer(amountDisp, sourceId) {
+    const buf = state.investmentBuffer, d = dispCur();
+    if (!buf) return;
+    const src = (state.investmentSources || []).find(s => s.id === sourceId) || defaultSource();
     if (!src) return;
-    const amt = convert(amount, cur, src.cur);
-    src.contributed += amt;
-    src.value += amt;
-    src.surpluses.unshift({ date: state.currentDate, amount: amt, cur: src.cur, from: fromLabel });
+    const take = Math.min(amountDisp, convert(buf.balance, buf.cur, d));
+    if (take <= 1e-9) return;
+    buf.balance -= convert(take, d, buf.cur); if (buf.balance < 1e-9) buf.balance = 0;
+    const amt = convert(take, d, src.cur);
+    src.contributed += amt; src.value += amt;
+    src.surpluses.unshift({ date: state.currentDate, amount: amt, cur: src.cur, from: "Deployed from buffer" });
     if (src.surpluses.length > 500) src.surpluses.length = 500;
+    save();
   }
   function createSource(name, cur, initVal) {
     const v = Math.max(0, initVal || 0);
@@ -1106,7 +1141,7 @@
       const d = dispCur();
       const res = distributeToGoals(convert(g.balance, g.cur, d), state.goals);   // pot in display cur
       state.goals.forEach(x => { if (res.dep[x.id]) x.balance += convert(res.dep[x.id], d, x.cur); });
-      if (res.unplaced > 1e-9) contributeToInvestment(res.unplaced, d, "Goal: " + g.name);   // overflow -> default source
+      if (res.unplaced > 1e-9) contributeToInvestment(res.unplaced, d, "Goal: " + g.name);   // overflow -> investment buffer
     }
     save();
   }
@@ -1211,15 +1246,19 @@
       ${topbar(dateLine, "Today", true)}
       ${ratesNotice()}
       <div class="hero fade-in" data-action="nav" data-tab="available" style="cursor:pointer">
-        <div class="label">Currently available</div>
+        <div class="label">Total ceiling today</div>
         <div class="big">${cai}<span class="cents">${cac}</span></div>
-        <div class="sub">${noPools ? "Add income to begin" : money(sp.caBal) + " buffer + " + money(sp.allow) + " allowance · tap to manage"}</div>
+        <div class="sub">${noPools ? "Add income to begin" : money(sp.allow) + " daily allowance + " + money(sp.caBal) + " available · your real limit before touching pools"}</div>
         ${startBudget > 0 ? `<div class="progress"><i style="width:${Math.min(100, sp.total / startBudget * 100)}%"></i></div>` : ""}
       </div>
 
       <div class="tiles">
-        <div class="tile"><div class="k">Daily allowance</div><div class="v pos">${money(allowance)}</div></div>
+        <div class="tile"><div class="k">Daily allowance</div><div class="v pos">${money(sp.allow)}</div></div>
+        <div class="tile"><div class="k">Currently available</div><div class="v">${money(sp.caBal)}</div></div>
+      </div>
+      <div class="tiles" style="margin-top:12px">
         <div class="tile"><div class="k">Spent today</div><div class="v">${money(spent)}</div></div>
+        <div class="tile" data-action="nav" data-tab="available" style="cursor:pointer"><div class="k">Manage available</div><div class="v" style="color:var(--accent-2)">→</div></div>
       </div>
 
       ${draw ? `<div class="deficit-banner">${svg("alert")}<div><b>${money(draw.X)} drawn from your pools</b><span>Daily allowance reduced by ~${money(draw.Y)}/day over ${draw.Z} remaining days${draw.inv > 1e-6 ? " · plus " + money(draw.inv) + " from investment" : ""}</span></div></div>` : ""}
@@ -1253,13 +1292,13 @@
         <div class="card" style="margin-bottom:14px">
           <div class="trow"><span>Buffer (carries over)</span><b>${money(sp.caBal)}</b></div>
           <div class="trow"><span>Today's allowance left</span><b>${money(sp.allow)}</b></div>
-          <div class="chart-note" style="margin-top:8px">${capLine} Spending draws from the buffer first, then today's allowance, then your pools. The buffer fills nightly with <b>${state.availSplit || 0}%</b> of unspent allowance (set in Settings).</div>
+          <div class="chart-note" style="margin-top:8px">${capLine} Spending draws from today's allowance first, then this buffer, then your pools. The buffer fills nightly with <b>${state.availSplit || 0}%</b> of unspent allowance (set in Settings).</div>
         </div>
         <div class="section-title">Move buffer money out</div>
         <div class="chart-note" style="margin-bottom:10px">Moves come out of your <b>${money(caDisp)}</b> buffer — today's allowance can't be moved.</div>
         <button class="btn ghost" data-action="ca-to-pool" ${caDisp <= 1e-9 ? "disabled" : ""} style="margin-bottom:10px">${svg("pools")} Add to a pool</button>
         <button class="btn ghost" data-action="ca-to-goals" ${caDisp <= 1e-9 ? "disabled" : ""} style="margin-bottom:10px">${svg("target")} Add to goals</button>
-        <button class="btn ghost" data-action="ca-to-invest" ${caDisp <= 1e-9 ? "disabled" : ""}>${svg("lock")} Add to investment</button>
+        <button class="btn ghost" data-action="ca-to-invest" ${caDisp <= 1e-9 ? "disabled" : ""}>${svg("lock")} Send to investment buffer</button>
       </div>
     `;
   }
@@ -1387,9 +1426,9 @@
       const perDay = poolAmt / dr;
       const cl = convLine(perDay, cur);
       const head = (on && investAmt > 1e-9)
-        ? `<b>${fmtAmt(investAmt, cur)}</b> → investment 🔒 · <b>${fmtAmt(poolAmt, cur)}</b> becomes the pool.<br>`
+        ? `<b>${fmtAmt(investAmt, cur)}</b> → investment buffer 🔒 · <b>${fmtAmt(poolAmt, cur)}</b> becomes the pool.<br>`
         : "";
-      pv.innerHTML = head + `Ends <b>${fmtFull(end)}</b> · ${dr} days<br>Starts at <b>${fmtAmt(perDay, cur)} / day</b>${cl ? " (" + cl + ")" : ""} — rising as you underspend.`;
+      pv.innerHTML = head + `Ends <b>${fmtFull(end)}</b> · ${dr} days<br>About <b>${fmtAmt(perDay, cur)} / day</b>${cl ? " (" + cl + ")" : ""} — unspent days flow to your goals, buffer & investments.`;
     };
     const cb = document.getElementById("in-invest");
     if (cb) cb.addEventListener("change", () => {
@@ -1441,6 +1480,16 @@
       </div>`;
     }).join("");
 
+    const bufDisp = bufferDisplay();
+    const bufCard = `
+      <div class="card" style="border:1.5px solid var(--invest);margin-bottom:14px">
+        <div class="src-top"><div class="name">${svg("clock")} Investment Buffer <span class="srcbadge">Pending deployment</span></div></div>
+        <div class="src-val" style="color:var(--invest-2)">${fmtAmt(state.investmentBuffer.balance, state.investmentBuffer.cur)}</div>
+        ${convLine(state.investmentBuffer.balance, state.investmentBuffer.cur) ? `<div class="src-conv">${convLine(state.investmentBuffer.balance, state.investmentBuffer.cur)}</div>` : ""}
+        <div class="chart-note" style="margin-top:8px">All investment-bound money accumulates here — on-arrival splits, the invest share of unspent allowance, and pool-expiry surpluses. It never funds daily spending. Deploy it into a source when you're ready.</div>
+        <button class="btn invest" data-action="open-deploy" ${bufDisp <= 1e-9 || !sources.length ? "disabled" : ""} style="margin-top:12px">${svg("arrow")} Deploy to investments</button>
+      </div>`;
+
     screen.innerHTML = `
       ${topbar("Long-term capital", "Investment", false)}
       <div class="invest-hero fade-in">
@@ -1449,8 +1498,9 @@
         <div class="sub">Invested ${money(totContrib)} · <b>${gain >= 0 ? "+" : ""}${money(gain)}</b> (${(gainPct >= 0 ? "+" : "") + gainPct.toFixed(1)}%)</div>
       </div>
       <div class="pad" style="margin-top:16px">
+        ${bufCard}
         <button class="btn ghost" data-action="open-addsource">${svg("plus")} Add a source</button>
-        <div class="section-title">Sources · inflows go to the default</div>
+        <div class="section-title">Sources · deploy the buffer into these</div>
         ${cards}
         <div class="card" style="margin-top:6px">
           <div class="trow"><span>Total invested</span><b>${money(totContrib)}</b></div>
@@ -1490,7 +1540,7 @@
                   <div class="amt">-${fmtAmt(e.amount, ec).replace(/^-/, "")}</div>
                 </div>`;
               }).join("") + `</div>`
-            : `<div class="hday-empty">No expenses logged — the full allowance repooled${saved > 1e-9 ? " & funded goals" : ""}.</div>`;
+            : `<div class="hday-empty">No expenses logged — the full allowance flowed to your goals, buffer & available${saved > 1e-9 ? "" : ""}.</div>`;
         }
         return `
         <div class="hday ${open ? "open" : ""}" data-action="toggle-day" data-date="${h.date}">
@@ -1528,7 +1578,7 @@
           <div>
             <div style="font-size:13px;font-weight:700;color:var(--goal-2)">LEFTOVER SPLIT → GOALS</div>
             <div style="font-size:27px;font-weight:800;letter-spacing:-.6px;color:var(--goal-2);margin-top:2px">${state.goalSplit}%<span style="font-size:14px;color:var(--muted);font-weight:700"> of leftover</span></div>
-            <div style="font-size:12.5px;color:var(--muted);margin-top:3px">${state.availSplit || 0}% to buffer · ${state.repoolSplit || 0}% repooled · ~${money(estLeft)} avg daily leftover</div>
+            <div style="font-size:12.5px;color:var(--muted);margin-top:3px">${state.availSplit || 0}% to available · ${state.repoolSplit || 0}% to investment buffer · ~${money(estLeft)} avg daily leftover</div>
           </div>
           <button class="icon-btn" data-action="edit-split">${svg("sliders")}</button>
         </div>
@@ -1641,7 +1691,7 @@
     const debit = {};
     (state.spendDebits || []).forEach(x => { if (x.id !== "investment") debit[x.id] = (debit[x.id] || 0) + x.amount; });
     const pools = state.pools.map(p => ({ id: p.id, name: p.name, c: convert((p.balance + (debit[p.id] || 0)) / daysRemaining(p, todayDate()), p.cur, d) }));
-    return { date: fmtISO(todayDate()), spent: todaySpent(), allowance: state.todayAllowance || 0, saved: 0, cur: d, pools: pools, goals: [], invest: investTotalValue(d), avail: caAvailableDisplay() };
+    return { date: fmtISO(todayDate()), spent: todaySpent(), allowance: state.todayAllowance || 0, saved: 0, cur: d, pools: pools, goals: [], invest: investTotalValue(d), avail: caAvailableDisplay(), buf: bufferDisplay() };
   }
   function rangedData() {
     const chrono = state.history.slice().reverse();   // oldest -> newest
@@ -1699,6 +1749,7 @@
     if (goalIds.length) mkLine("ch-goals", labels, goalIds.map((id, i) => ({ label: goalName[id], color: palette(i + 2), fill: false, data: data.map(p => { const e = (p.goals || []).find(x => x.id === id); return e ? cv(p, e.s) : 0; }) })));
     mkLine("ch-invest", labels, [{ label: "Investment balance", data: data.map(p => cv(p, p.invest)), color: "#6366f1", fill: true }]);
     mkLine("ch-avail", labels, [{ label: "Currently available", data: data.map(p => cv(p, p.avail)), color: "#0ea5a4", fill: true }]);
+    mkLine("ch-buffer", labels, [{ label: "Investment buffer", data: data.map(p => cv(p, p.buf)), color: "#818cf8", fill: true }]);
   }
   // One chart per investment source: cumulative contributed, cumulative withdrawn, and the
   // sparse, manually-entered current value (dotted, points only on update dates).
@@ -1737,6 +1788,7 @@
         + (hasPools ? card("Pool contributions", "ch-pools", "Each pool's share of the allowance — pools fade out as they end") : "")
         + (hasGoals ? card("Goal contributions", "ch-goals", "Money flowing into each goal per day") : "")
         + card("Currently available buffer", "ch-avail", "Your short-term buffer balance over time (excludes the daily allowance)")
+        + card("Investment buffer", "ch-buffer", "Money pending deployment to investment sources, over time")
         + card("Investment growth", "ch-invest", "Fed by arrival splits and pool-expiry sweeps");
       if (sources.length) {
         body += `<div class="section-title">Investment sources</div>`
@@ -1860,8 +1912,8 @@
     if (avail <= 1e-9) return;
     if (kind === "pool" && !state.pools.length) { alert("No active pools to add to."); return; }
     if (kind === "goals" && !state.goals.length) { alert("No active goals to add to."); return; }
-    const titles = { pool: "Add to a pool", goals: "Add to goals", invest: "Add to investment" };
-    const notes = { pool: "Increases the selected pool's balance directly.", goals: "Distributed across your goals by their current split ratios.", invest: "Moves into your default investment source." };
+    const titles = { pool: "Add to a pool", goals: "Add to goals", invest: "Send to investment buffer" };
+    const notes = { pool: "Increases the selected pool's balance directly.", goals: "Distributed across your goals by their current split ratios.", invest: "Moves into the Investment Buffer, pending deployment to a source." };
     const extra = kind === "pool"
       ? `<div class="field"><label>Pool</label><select class="input cur-select" id="ca-pool">${state.pools.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join("")}</select></div>`
       : "";
@@ -1876,6 +1928,24 @@
     setTimeout(() => { const el = document.getElementById("ca-amt"); if (el) el.focus(); }, 250);
   }
 
+  function openDeploy() {
+    const avail = bufferDisplay();
+    const sources = state.investmentSources || [];
+    if (avail <= 1e-9 || !sources.length) return;
+    if (!deploySourceId || !sources.find(s => s.id === deploySourceId)) deploySourceId = state.defaultSourceId;
+    const opts = sources.map(s => `<option value="${s.id}" ${s.id === deploySourceId ? "selected" : ""}>${esc(s.name)} · ${fmtAmt(s.value, s.cur)}</option>`).join("");
+    openSheet(`
+      <h2>Deploy to investments</h2>
+      <div class="field"><label>Amount · ${money(avail)} in buffer</label>
+        <div class="amount-wrap"><span class="sym">${curSym(dispCur())}</span><input class="input" id="dep-amt" type="text" inputmode="decimal" placeholder="0.00" /></div>
+      </div>
+      <div class="field"><label>Into source</label><select class="input cur-select" id="dep-src">${opts}</select></div>
+      <div class="chart-note">Recorded as a contribution to that source — raising its invested total and current value. This is the only way money leaves the buffer.</div>
+      <button class="btn invest" data-action="do-deploy" style="margin-top:14px">${svg("arrow")} Deploy</button>`);
+    const ds = document.getElementById("dep-src"); if (ds) ds.addEventListener("change", () => { deploySourceId = ds.value; });
+    setTimeout(() => { const el = document.getElementById("dep-amt"); if (el) el.focus(); }, 250);
+  }
+
   function openAddSource() {
     openSheet(`
       <h2>New investment source</h2>
@@ -1884,7 +1954,7 @@
       <div class="field"><label>Starting value (optional)</label>
         <div class="amount-wrap"><span class="sym" id="as-sym">${curSym(state.lastCurrency)}</span><input class="input" id="as-val" type="text" inputmode="decimal" placeholder="0.00" /></div>
       </div>
-      <div class="preview invest">New inflows always land in the default source — set this one as default later if you want them here.</div>
+      <div class="preview invest">Buffer deploys land in the default source — set this one as default later if you want them here.</div>
       <button class="btn invest" data-action="create-source" style="margin-top:14px">${svg("plus")} Create source</button>`);
     bindCurSym("as-cur", "as-sym");
     setTimeout(() => { const el = document.getElementById("as-name"); if (el) el.focus(); }, 250);
@@ -1910,7 +1980,7 @@
       <div class="field"><label>Name</label><input class="input" id="mn-name" value="${esc(s.name)}" maxlength="40" /></div>
       <button class="btn ghost" data-action="save-srcname" data-id="${s.id}">Save name</button>
       ${isDef
-        ? `<div style="font-size:12.5px;color:var(--muted);margin-top:16px">This is the <b>default</b> source — all investment inflows arrive here. To delete it, make another source the default first.</div>`
+        ? `<div style="font-size:12.5px;color:var(--muted);margin-top:16px">This is the <b>default</b> source — buffer deploys land here unless you pick another. To delete it, make another source the default first.</div>`
         : `<button class="btn ghost" data-action="make-default" data-id="${s.id}" style="margin-top:10px">Set as default</button>
            <button class="btn danger" data-action="del-src" data-id="${s.id}" style="margin-top:10px">${svg("trash")} Delete source</button>`}`);
   }
@@ -1968,7 +2038,7 @@
       <div class="card">
         <div class="trow"><span>To goals</span><b>${state.goalSplit || 0}%</b></div>
         <div class="trow"><span>To Currently Available</span><b>${state.availSplit || 0}%</b></div>
-        <div class="trow"><span>Repooled (stays in pools)</span><b>${state.repoolSplit || 0}%</b></div>
+        <div class="trow"><span>To Investment Buffer</span><b>${state.repoolSplit || 0}%</b></div>
         ${(() => { const s = (state.goalSplit || 0) + (state.availSplit || 0) + (state.repoolSplit || 0); return `<div class="trow" style="border-top:1px solid var(--border);margin-top:4px;padding-top:10px"><span>Total</span><b class="${s === 100 ? "gain" : "loss"}">${s}%${s === 100 ? "" : " ⚠"}</b></div>` + (s !== 100 ? `<div class="chart-note" style="color:var(--danger);margin-top:6px">These don't add up to 100% — the split is scaled to fit, so the effective shares differ from what's shown.</div>` : ""); })()}
         <button class="btn ghost" data-action="edit-split" style="margin-top:12px">Edit split</button>
       </div>
@@ -2029,7 +2099,7 @@
       <div class="chart-note" style="margin:0 0 12px">Each day, your unspent allowance is divided three ways. These should add up to 100%.</div>
       <div class="ratio-row"><span class="ratio-lbl">To goals</span><span class="ratio-input"><input type="number" id="gs-range" min="0" max="100" step="1" inputmode="numeric" value="${state.goalSplit || 0}" />%</span></div>
       <div class="ratio-row"><span class="ratio-lbl">To Currently Available</span><span class="ratio-input"><input type="number" id="av-range" min="0" max="100" step="1" inputmode="numeric" value="${state.availSplit || 0}" />%</span></div>
-      <div class="ratio-row"><span class="ratio-lbl">Repooled (stays in pools)</span><span class="ratio-input"><input type="number" id="rp-range" min="0" max="100" step="1" inputmode="numeric" value="${state.repoolSplit || 0}" />%</span></div>
+      <div class="ratio-row"><span class="ratio-lbl">To Investment Buffer</span><span class="ratio-input"><input type="number" id="rp-range" min="0" max="100" step="1" inputmode="numeric" value="${state.repoolSplit || 0}" />%</span></div>
       <div id="split-sum" style="text-align:center;font-weight:800;margin:14px 0"></div>
       <button class="btn goal" data-action="save-split">Save</button>`);
     const upd = () => {
@@ -2077,7 +2147,7 @@
       if (cb && cb.checked) { const s = document.getElementById("in-pct"); pct = Math.max(0, Math.min(100, s ? (parseFloat(s.value) || 0) : 0)); }
       const investAmt = amt * (pct / 100);
       const poolAmt = amt - investAmt;
-      if (investAmt > 1e-9) contributeToInvestment(investAmt, cur, "Invest on arrival: " + (name || "Income"));   // straight to investment
+      if (investAmt > 1e-9) contributeToInvestment(investAmt, cur, "Invest on arrival: " + (name || "Income"));   // -> investment buffer
       if (poolAmt > 1e-9) createPool(name || "Income", poolAmt, end, cur, pct);          // remainder becomes the pool; remember the rate
       else { state.lastCurrency = cur; reconcileDay(); }                                 // 100% invested: no pool
       save();
@@ -2107,6 +2177,15 @@
       if (kind === "pool") caToPool(val("ca-pool"), capped);
       else if (kind === "goals") caToGoals(capped);
       else caToInvestment(capped);
+      closeSheet(); render(); return;
+    }
+
+    // investment buffer -> sources
+    if (a === "open-deploy") { openDeploy(); return; }
+    if (a === "do-deploy") {
+      const amt = num("dep-amt");
+      if (!(amt > 0)) { shake("dep-amt"); return; }
+      deployBuffer(Math.min(amt, bufferDisplay()), val("dep-src"));
       closeSheet(); render(); return;
     }
 
@@ -2256,6 +2335,7 @@
       availSplit: 25,
       repoolSplit: 25,
       available: { balance: 0, cur: displayCode },
+      investmentBuffer: { balance: 0, cur: displayCode },
       todayExpenses: [],
       todayAllowance: 0,
       spendDebits: [],
@@ -2322,6 +2402,8 @@
     if (typeof state.repoolSplit !== "number") state.repoolSplit = Math.max(0, 100 - state.goalSplit - state.availSplit);
     if (!state.available || typeof state.available !== "object") state.available = { balance: 0, cur: state.displayCurrency };
     if (!state.available.cur) state.available.cur = state.displayCurrency;
+    if (!state.investmentBuffer || typeof state.investmentBuffer !== "object") state.investmentBuffer = { balance: 0, cur: state.displayCurrency };
+    if (!state.investmentBuffer.cur) state.investmentBuffer.cur = state.displayCurrency;
     if (typeof state.seq !== "number") state.seq = 0;
   }
 
