@@ -403,6 +403,27 @@
   .sheet .grab { width: 40px; height: 5px; border-radius: 99px; background: #d8dbe2; margin: 6px auto 16px; }
   .sheet h2 { font-size: 21px; font-weight: 800; margin: 0 4px 16px; letter-spacing: -.4px; }
 
+  /* ---------- Undo toast + list ---------- */
+  #toast {
+    position: fixed; left: 50%; bottom: calc(var(--nav-h) + env(safe-area-inset-bottom, 0px) + 14px);
+    transform: translateX(-50%) translateY(16px);
+    width: max-content; max-width: min(calc(100% - 28px), calc(var(--maxw) - 28px));
+    display: flex; align-items: center; gap: 14px;
+    padding: 12px 14px 12px 16px; border-radius: 15px;
+    background: #111827; color: #fff; font-size: 13.5px; font-weight: 600;
+    box-shadow: 0 12px 30px rgba(15,23,42,.32);
+    opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s;
+    z-index: 90;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); pointer-events: auto; }
+  #toast span { min-width: 0; overflow-wrap: anywhere; }
+  #toast button { flex: none; color: #6ee7b7; font-weight: 800; font-size: 13.5px; padding: 6px 8px; margin: -6px -4px -6px 0; }
+  .undo-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border); }
+  .undo-row:first-child { border-top: 0; }
+  .undo-row .what { min-width: 0; font-size: 14.5px; font-weight: 700; overflow-wrap: anywhere; }
+  .undo-row .when { font-size: 12.5px; color: var(--muted); font-weight: 600; margin-top: 2px; }
+  .undo-row .btn { width: auto; flex: none; padding: 9px 14px; font-size: 13.5px; }
+
   /* setup overlay */
   #setup { position: fixed; inset: 0; z-index: 200; background: var(--bg); display: none; flex-direction: column; justify-content: center; padding: 28px; }
   #setup.show { display: flex; }
@@ -423,6 +444,8 @@
 </div>
 
 <div id="modal-root"><div class="scrim" data-action="close-modal"></div><div class="sheet" id="sheet"></div></div>
+
+<div id="toast" role="status" aria-live="polite"></div>
 
 <div id="setup">
   <div class="logo">
@@ -467,9 +490,89 @@
     try { const raw = localStorage.getItem(KEY); return raw ? JSON.parse(raw) : null; }
     catch (e) { return null; }
   }
-  function saveLocalOnly() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {} }
+  function saveLocalOnly() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {} undoBase = undoSnap(); }
   // Persist locally + stamp an updatedAt + queue a silent background Drive upload (if signed in).
-  function save() { if (state) state.updatedAt = Date.now(); saveLocalOnly(); queueUpload(); }
+  function save() { if (state) state.updatedAt = Date.now(); noteUndo(); saveLocalOnly(); queueUpload(); }
+
+  // ============================================================ UNDO
+  // Every user edit goes through save(), so save() is where undo steps are recorded: the state
+  // as it was at the previous save (`undoBase`) is pushed onto a device-local stack whenever the
+  // new state differs. Snapshots leave out history and rates (never edited by hand, and large),
+  // plus the sync fields. Several saves in one click collapse into a single step. Background
+  // saves (rate refresh, rollover, sync pulls) only move the baseline and never add a step.
+  const UNDO_KEY = "tdbs_undo_v1", UNDO_MAX = 30;
+  const UNDO_LABELS = {
+    "save-expense": "Expense logged", "del-expense": "Expense removed", "create-pool": "Income added",
+    "do-liquidate": "Liquidation", "do-ca-move": "Move from Currently Available", "do-deploy": "Deploy to investments",
+    "create-source": "Investment source added", "save-srcvalue": "Source value updated", "save-srcname": "Source renamed",
+    "make-default": "Default source changed", "migrate-del": "Source deleted", "migrate-new": "Source deleted",
+    "del-pool": "Pool deleted", "save-poolinvest": "Auto-invest rate changed", "save-settings": "Display currency changed",
+    "create-goal": "Goal created", "cancel-goal": "Goal cancelled", "do-cancel-goal": "Goal cancelled",
+    "spend-goal": "Goal spent", "save-split": "Leftover split changed"
+  };
+  let undoStack = loadUndo(), undoBase = null, undoLabel = null, undoSkip = false, undoTickOpen = false, toastTimer = null;
+
+  function loadUndo() {
+    try { const a = JSON.parse(localStorage.getItem(UNDO_KEY) || "[]"); return Array.isArray(a) ? a.filter(u => u && typeof u.snap === "string") : []; }
+    catch (e) { return []; }
+  }
+  function persistUndo() {
+    // If storage is full, drop the oldest steps until it fits rather than losing the newest.
+    for (let tries = 0; tries < 6; tries++) {
+      try { localStorage.setItem(UNDO_KEY, JSON.stringify(undoStack)); return; }
+      catch (e) { undoStack.splice(0, Math.max(1, Math.ceil(undoStack.length / 2))); }
+    }
+  }
+  function clearUndo() { undoStack = []; persistUndo(); hideToast(); }
+  function undoSnap() {
+    if (!state) return null;
+    const s = Object.assign({}, state);
+    delete s.history; delete s.rates; delete s.google; delete s.googleClientId; delete s.updatedAt;
+    try { return JSON.stringify(s); } catch (e) { return null; }
+  }
+  function noteUndo() {
+    if (undoSkip || undoTickOpen || !state || !undoBase) return;
+    if (undoSnap() === undoBase) return;                      // nothing actually changed
+    const label = undoLabel || "Change";
+    const top = undoStack[undoStack.length - 1];
+    // typing a goal's share fires once per edit; keep the snapshot from before the first one
+    const merge = label === "Goal share changed" && top && top.label === label && Date.now() - top.t < 60000;
+    if (!merge) {
+      undoStack.push({ label: label, t: Date.now(), snap: undoBase });
+      if (undoStack.length > UNDO_MAX) undoStack.splice(0, undoStack.length - UNDO_MAX);
+      persistUndo();
+    }
+    undoTickOpen = true; setTimeout(() => { undoTickOpen = false; }, 0);
+    showToast(esc(label), true);
+  }
+  // Step back `n` changes: restore the snapshot taken before the n-th most recent one.
+  function undoLast(n) {
+    let u = null;
+    for (let i = 0; i < (n || 1); i++) { const x = undoStack.pop(); if (x) u = x; }
+    persistUndo();
+    if (!u || !state) return null;
+    let snap;
+    try { snap = JSON.parse(u.snap); } catch (e) { return null; }
+    // Keep today's history, rates and sync info; drop history days recorded after the snapshot —
+    // the rollover below replays them from the restored balances.
+    snap.history = (state.history || []).filter(h => h.date < snap.currentDate);
+    snap.rates = state.rates;
+    snap.google = state.google;
+    if (state.googleClientId) snap.googleClientId = state.googleClientId;
+    state = snap;
+    migrate(); rollIfNeeded();
+    undoSkip = true; save(); undoSkip = false;
+    return u;
+  }
+  function showToast(html, withUndo) {
+    const t = document.getElementById("toast");
+    if (!t) return;
+    t.innerHTML = `<span>${html}</span>` + (withUndo ? `<button data-action="undo-now">Undo</button>` : "");
+    t.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(hideToast, withUndo ? 7000 : 3000);
+  }
+  function hideToast() { const t = document.getElementById("toast"); if (t) t.classList.remove("show"); clearTimeout(toastTimer); }
 
   // ============================================================ DATE HELPERS
   function startOfDay(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
@@ -573,9 +676,10 @@
         : (state.rates && state.rates.date) || "";
       state.rates = { base: base, rates: rates, date: date, fetched: now };
       reconcileDay();   // new rates change converted allowance/spend, so re-settle any deficit
-      save(); render();
+      undoSkip = true; save(); undoSkip = false;   // a rate refresh is not an undo step
+      render();
     } catch (e) {
-      if (force) { save(); render(); }   // surface the stale-rate notice
+      if (force) { undoSkip = true; save(); undoSkip = false; render(); }   // surface the stale-rate notice
     }
   }
 
@@ -1030,7 +1134,7 @@
     state.investmentSources.splice(i, 1);
     save();
   }
-  // Fully destructive: the pool's remaining balance disappears. No redistribution, no undo.
+  // Destructive: the pool's remaining balance disappears with no redistribution (recoverable only via Undo).
   function deletePool(id) {
     if (state.spendDebits) state.spendDebits = state.spendDebits.filter(dbt => dbt.id !== id);
     state.pools = state.pools.filter(p => p.id !== id);
@@ -1130,18 +1234,38 @@
     state.goals.splice(i, 1);
     save();
   }
-  // Cancel a goal: redistribute its balance to the remaining goals proportionally by share
-  // (cascading when one fills); any overflow -> investment. Other shares are left as-is.
-  function cancelGoal(id) {
+  // Cancel a goal and send its balance to `dest`:
+  //   "available"   -> the Currently Available buffer (also the fallback for anything unplaced)
+  //   "goals"       -> the remaining goals, proportionally by share (cascading when one fills)
+  //   "goal:<id>"   -> one specific goal, up to its target
+  //   "pool:<id>"   -> a pool's balance (raises the daily allowance)
+  //   "buffer"      -> the Investment Buffer
+  // Whatever the goals can't hold falls through to Currently Available. Other shares are left as-is.
+  function cancelGoal(id, dest) {
     const i = state.goals.findIndex(g => g.id === id);
     if (i < 0) return;
     const g = state.goals[i];
     state.goals.splice(i, 1);
     if (g.balance > 1e-9) {
       const d = dispCur();
-      const res = distributeToGoals(convert(g.balance, g.cur, d), state.goals);   // pot in display cur
-      state.goals.forEach(x => { if (res.dep[x.id]) x.balance += convert(res.dep[x.id], d, x.cur); });
-      if (res.unplaced > 1e-9) contributeToInvestment(res.unplaced, d, "Goal: " + g.name);   // overflow -> investment buffer
+      let amt = convert(g.balance, g.cur, d);   // display currency
+      dest = dest || "available";
+      if (dest === "goals" || dest.indexOf("goal:") === 0) {
+        const targets = dest === "goals" ? state.goals : state.goals.filter(x => x.id === dest.slice(5));
+        const res = distributeToGoals(amt, targets);
+        targets.forEach(x => { if (res.dep[x.id]) x.balance += convert(res.dep[x.id], d, x.cur); });
+        amt = res.unplaced;
+      } else if (dest.indexOf("pool:") === 0) {
+        const p = state.pools.find(x => x.id === dest.slice(5));
+        if (p) { p.balance += convert(amt, d, p.cur); amt = 0; }
+      } else if (dest === "buffer") {
+        contributeToInvestment(amt, d, "Goal: " + g.name); amt = 0;
+      }
+      if (amt > 1e-9) {
+        if (!state.available) state.available = { balance: 0, cur: d };
+        state.available.balance += convert(amt, d, state.available.cur);
+      }
+      reconcileDay();   // pool / buffer balances changed, so re-settle today's spend
     }
     save();
   }
@@ -1173,7 +1297,8 @@
     alert: '<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
     chart: '<line x1="3" y1="21" x2="21" y2="21"/><line x1="6" y1="21" x2="6" y2="14"/><line x1="11" y1="21" x2="11" y2="7"/><line x1="16" y1="21" x2="16" y2="11"/><line x1="21" y1="21" x2="21" y2="4"/>',
     back: '<polyline points="15 18 9 12 15 6"/>',
-    wallet: '<path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4z"/>'
+    wallet: '<path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4z"/>',
+    undo: '<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>'
   };
   const svg = (k, w) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${w || 2}" stroke-linecap="round" stroke-linejoin="round">${I[k]}</svg>`;
 
@@ -1212,7 +1337,10 @@
         ${back ? `<button class="icon-btn" data-action="nav" data-tab="${back}">${svg("back")}</button>` : ""}
         <div><div class="eyebrow">${eyebrow}</div><h1>${title}</h1></div>
       </div>
-      ${withGear ? `<button class="icon-btn" data-action="settings">${svg("gear")}</button>` : ""}</div>`;
+      <div style="display:flex;align-items:center;gap:8px;flex:none">
+        ${undoStack.length ? `<button class="icon-btn" data-action="open-undo" aria-label="Undo" title="Undo">${svg("undo")}</button>` : ""}
+        ${withGear ? `<button class="icon-btn" data-action="settings" aria-label="Settings">${svg("gear")}</button>` : ""}
+      </div></div>`;
   }
 
   // ---------- HOME
@@ -1660,7 +1788,7 @@
       if (inp.disabled) return;
       const id = inp.dataset.id;
       inp.addEventListener("input", () => liveRebalance(id, inp.value));
-      inp.addEventListener("change", () => { setGoalRatio(id, parseFloat(inp.value) || 0); render(); });
+      inp.addEventListener("change", () => { undoLabel = "Goal share changed"; setGoalRatio(id, parseFloat(inp.value) || 0); render(); });
     });
   }
 
@@ -1991,7 +2119,7 @@
     const hasBal = (s.value || 0) > 1e-9 || (s.contributed || 0) > 1e-9 || (s.surpluses || []).length;
     if (!hasBal || !others.length) {
       openSheet(`<h2>Delete ${esc(s.name)}?</h2>
-        <div style="font-size:13.5px;color:var(--muted);margin:0 4px 14px">${hasBal ? "This holds " + fmtAmt(s.value, s.cur) + " and there's nowhere to move it — deleting discards it." : "This source is empty."} This can't be undone.</div>
+        <div style="font-size:13.5px;color:var(--muted);margin:0 4px 14px">${hasBal ? "This holds " + fmtAmt(s.value, s.cur) + " and there's nowhere to move it — deleting discards it." : "This source is empty."}</div>
         <button class="btn danger" data-action="migrate-del" data-id="${s.id}" data-target="">${svg("trash")} Delete source</button>`);
       return;
     }
@@ -2093,6 +2221,72 @@
     setTimeout(() => { const el = document.getElementById("g-name"); if (el) el.focus(); }, 250);
   }
 
+  // Cancelling a goal that holds money asks where the balance should go.
+  function openCancelGoal(id) {
+    const g = state.goals.find(x => x.id === id);
+    if (!g) return;
+    if (g.balance <= 1e-9) {
+      if (confirm(`Cancel “${g.name}”? It holds no money, so nothing needs to move.`)) { cancelGoal(id); render(); }
+      return;
+    }
+    const d = dispCur();
+    const amt = convert(g.balance, g.cur, d);
+    const others = state.goals.filter(x => x.id !== id);
+    const opts = [["available", "Currently Available"]];
+    if (others.length > 1) opts.push(["goals", "All other goals (by funding share)"]);
+    others.forEach(o => opts.push(["goal:" + o.id, "Goal · " + o.name]));
+    state.pools.forEach(p => opts.push(["pool:" + p.id, "Pool · " + p.name]));
+    opts.push(["buffer", "Investment Buffer"]);
+    const picked = opts.some(o => o[0] === state.cancelDest) ? state.cancelDest : "available";
+    const cl = convLine(g.balance, g.cur);
+    openSheet(`
+      <h2>Cancel ${esc(g.name)}</h2>
+      <div style="font-size:13.5px;color:var(--muted);margin:0 4px 14px">This goal holds <b style="color:var(--text)">${fmtAmt(g.balance, g.cur)}</b>${cl ? " (" + cl + ")" : ""}. Choose where that money goes.</div>
+      <div class="field"><label>Send the balance to</label>
+        <select class="input cur-select" id="cg-dest">${opts.map(o => `<option value="${esc(o[0])}" ${o[0] === picked ? "selected" : ""}>${esc(o[1])}</option>`).join("")}</select>
+      </div>
+      <div class="preview" id="cg-note"></div>
+      <button class="btn danger" data-action="do-cancel-goal" data-id="${g.id}" style="margin-top:16px">Cancel goal &amp; move balance</button>`);
+    const sel = document.getElementById("cg-dest");
+    const upd = () => {
+      const v = sel.value, note = document.getElementById("cg-note");
+      if (!note) return;
+      let t;
+      if (v === "available") {
+        t = `Adds <b>${money(amt)}</b> to Currently Available — spendable right away.`;
+        const over = state.pools.length ? caAvailableDisplay() + amt - avgPoolBalance(d) : 0;
+        if (over > 0.005) t += ` Currently Available is capped at your average pool balance (${money(avgPoolBalance(d))}), so about <b>${money(over)}</b> above the cap moves on to your goals and the Investment Buffer at the next midnight rollover.`;
+      } else if (v === "goals") {
+        t = `Shared among your other goals by funding share. Anything they can't hold goes to Currently Available.`;
+      } else if (v.indexOf("goal:") === 0) {
+        const o = others.find(x => x.id === v.slice(5));
+        const room = o ? Math.max(0, convert(o.target - o.balance, o.cur, d)) : 0;
+        t = `Tops up <b>${esc(o ? o.name : "the goal")}</b>.` + (amt > room + 0.005 ? ` It only has room for ${money(room)}, so the other <b>${money(amt - room)}</b> goes to Currently Available.` : "");
+      } else if (v.indexOf("pool:") === 0) {
+        const p = state.pools.find(x => x.id === v.slice(5));
+        t = p ? `Adds to <b>${esc(p.name)}</b>, raising your daily allowance by about <b>${money(amt / daysRemaining(p, todayDate()))} / day</b> until it ends.` : "";
+      } else {
+        t = `Moves <b>${money(amt)}</b> into the Investment Buffer, where it waits to be deployed to a source.`;
+      }
+      note.innerHTML = t;
+    };
+    sel.addEventListener("change", upd); upd();
+  }
+
+  function openUndo() {
+    if (!undoStack.length) { openSheet(`<h2>Undo</h2><div style="font-size:13.5px;color:var(--muted);margin:0 4px">Nothing to undo.</div>`); return; }
+    const rows = undoStack.slice().reverse().map((u, i) => `
+      <div class="undo-row">
+        <div style="min-width:0"><div class="what">${esc(u.label)}</div><div class="when">${timeAgo(u.t)}</div></div>
+        <button class="btn ghost" data-action="undo-to" data-n="${i + 1}">${i === 0 ? "Undo" : "Undo back to here"}</button>
+      </div>`).join("");
+    openSheet(`
+      <h2>Undo</h2>
+      <div style="font-size:13.5px;color:var(--muted);margin:0 4px 12px">Your recent changes, newest first. Undoing one also undoes every change above it.</div>
+      <div class="card" style="padding:4px 16px">${rows}</div>
+      <div class="chart-note" style="margin-top:12px">Kept on this device only, for your last ${UNDO_MAX} changes. The list is cleared when newer data arrives from another device.</div>`);
+  }
+
   function openSplitEdit() {
     openSheet(`
       <h2>Leftover split</h2>
@@ -2120,6 +2314,17 @@
     const el = e.target.closest("[data-action]");
     if (!el) return;
     const a = el.dataset.action;
+    undoLabel = UNDO_LABELS[a] || null;   // names the undo step if this click ends up changing data
+
+    if (a === "undo-now" || a === "undo-to") {
+      const n = a === "undo-to" ? Math.max(1, parseInt(el.dataset.n, 10) || 1) : 1;
+      if (n > 1 && !confirm("Undo your last " + n + " changes?")) return;
+      const u = undoLast(n);
+      closeSheet(); render();
+      if (u) showToast(n > 1 ? "Undid " + n + " changes" : "Undone · " + esc(u.label), false); else hideToast();
+      return;
+    }
+    if (a === "open-undo") { openUndo(); return; }
 
     if (a === "nav") { tab = el.dataset.tab; if (tab === "add") { investOn = false; investPct = 10; } lastLoggedId = null; render(); return; }
     if (a === "chart-range") { chartRange = el.dataset.range; renderCharts(); return; }
@@ -2213,7 +2418,7 @@
       const p = state.pools.find(x => x.id === el.dataset.id);
       if (!p) return;
       const cl = convLine(p.balance, p.cur);
-      if (confirm(`Delete “${p.name}”?\n\nThis permanently removes ${fmtAmt(p.balance, p.cur)}${cl ? " (" + cl + ")" : ""} from your budget. The money is NOT redistributed and this cannot be undone.`)) {
+      if (confirm(`Delete “${p.name}”?\n\nThis permanently removes ${fmtAmt(p.balance, p.cur)}${cl ? " (" + cl + ")" : ""} from your budget. The money is NOT redistributed.`)) {
         deletePool(el.dataset.id); render();
       }
       return;
@@ -2240,7 +2445,7 @@
     }
     if (a === "reset-data") {
       if (confirm("Erase ALL pools, goals, history and investment capital? This cannot be undone.")) {
-        localStorage.removeItem(KEY); state = null; closeSheet(); boot();
+        localStorage.removeItem(KEY); state = null; undoBase = null; clearUndo(); closeSheet(); boot();
       }
       return;
     }
@@ -2255,11 +2460,11 @@
       if (ovr && ovr.checked) { const s = document.getElementById("g-split"); ratio = s ? parseFloat(s.value) : null; }
       createGoal(name, target, ratio, val("g-cur")); closeSheet(); tab = "goals"; render(); return;
     }
-    if (a === "cancel-goal") {
-      if (confirm("Cancel this goal? Its balance moves to your oldest remaining goal, or to the investment pool if there are none.")) {
-        cancelGoal(el.dataset.id); closeSheet(); render();
-      }
-      return;
+    if (a === "cancel-goal") { openCancelGoal(el.dataset.id); return; }
+    if (a === "do-cancel-goal") {
+      const dest = val("cg-dest") || "available";
+      state.cancelDest = dest;   // remember the choice for next time
+      cancelGoal(el.dataset.id, dest); closeSheet(); render(); return;
     }
     if (a === "spend-goal") {
       if (confirm("Spend this goal? The saved money is used and the goal is removed.")) {
@@ -2483,6 +2688,7 @@
     state = remote;
     state.google = g || { signedIn: true, fileId: null };
     if (cid) state.googleClientId = cid;
+    clearUndo();   // local undo steps describe the state we just replaced
     migrate(); rollIfNeeded();
   }
 

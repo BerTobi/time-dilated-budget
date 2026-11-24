@@ -14,6 +14,8 @@ free [ExchangeRate-API](https://www.exchangerate-api.com) open endpoint.
 - Per-entity multi-currency with daily auto-conversion (display currency configurable)
 - Every expense deducts immediately, shortest-horizon-first; overspending draws down savings
 - Invest-on-arrival split, destructive pool deletion, full history
+- Undo for the last 30 changes (per device) — a toast after each change plus an undo list in the top bar
+- Cancelling a goal lets you choose where its balance goes: Currently Available, other goals, a pool, or the Investment Buffer
 - Installable PWA — works offline, opens standalone
 
 ## Run locally
